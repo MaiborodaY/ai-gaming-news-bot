@@ -149,7 +149,14 @@ function deduplicateNewsItems(items) {
 }
 
 function formatDraftNewsPost(item) {
-  return `📰 Draft news\n\n🎮 ${item.title}\n\nSource: ${item.link}\n\nSource name: ${item.source}`;
+  return `📝 Черновик поста
+
+🎮 ${item.title}
+
+Появилась новая игровая новость от ${item.source}. Полные детали доступны по ссылке ниже.
+
+Источник: ${item.source}
+${item.link}`;
 }
 
 async function fetchNewsSource(source) {
