@@ -12,6 +12,7 @@ Source: https://example.com`;
 const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
+const DRAFT_NEWS_COMMAND = '/draft_news';
 const NEWS_SOURCES = [
   {
     name: 'Steam',
@@ -72,7 +73,9 @@ function decodeXmlEntities(value = '') {
     .replaceAll('&gt;', '>')
     .replaceAll('&quot;', '"')
     .replaceAll('&apos;', "'")
-    .replaceAll('&#39;', "'");
+    .replaceAll('&#39;', "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)));
 }
 
 function getTagValue(xml, tagName) {
@@ -143,6 +146,10 @@ function deduplicateNewsItems(items) {
   }
 
   return uniqueItems;
+}
+
+function formatDraftNewsPost(item) {
+  return `📰 Draft news\n\n🎮 ${item.title}\n\nSource: ${item.link}\n\nSource name: ${item.source}`;
 }
 
 async function fetchNewsSource(source) {
@@ -249,6 +256,22 @@ export default {
           .join('\n\n');
 
         await sendTelegramMessage(env, userChatId, `Latest gaming news:\n\n${newsList}`);
+      }
+
+      if (messageText === DRAFT_NEWS_COMMAND && userChatId && chatType === 'private') {
+        const newsResult = await fetchGamingNews();
+
+        if (!newsResult.ok) {
+          await sendTelegramMessage(env, userChatId, 'Failed to create draft news ❌');
+          return jsonResponse({ ok: true });
+        }
+
+        if (newsResult.items.length === 0) {
+          await sendTelegramMessage(env, userChatId, 'No news found');
+          return jsonResponse({ ok: true });
+        }
+
+        await sendTelegramMessage(env, userChatId, formatDraftNewsPost(newsResult.items[0]));
       }
 
       return jsonResponse({ ok: true });
