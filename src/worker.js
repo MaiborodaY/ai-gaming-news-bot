@@ -13,6 +13,7 @@ const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
+const AI_TEST_COMMAND = '/ai_test';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
@@ -308,6 +309,50 @@ async function generateAiNewsPost(env, item) {
     return sanitizeAiPost(text, item);
   } catch {
     return null;
+  }
+}
+
+async function testOpenAi(env) {
+  if (!env.OPENAI_API_KEY) {
+    return 'OPENAI_API_KEY is not configured';
+  }
+
+  const model = env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL;
+
+  try {
+    const response = await fetch(OPENAI_API_URL, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'content-type': 'application/json; charset=utf-8'
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: 'Reply with exactly: ok'
+          }
+        ],
+        temperature: 0,
+        max_tokens: 10
+      })
+    });
+
+    if (!response.ok) {
+      return `AI test failed ❌ status: ${response.status}`;
+    }
+
+    const data = await response.json();
+    const message = data?.choices?.[0]?.message?.content;
+
+    if (!message) {
+      return `AI test failed ❌ empty response, model: ${model}`;
+    }
+
+    return `AI is configured ✅\nModel: ${model}`;
+  } catch {
+    return 'AI test failed ❌ network or runtime error';
   }
 }
 
@@ -669,6 +714,11 @@ export default {
         await sendTelegramMessage(env, userChatId, formatDraftMessage(post), {
           reply_markup: publishDraftKeyboard(draftId)
         });
+      }
+
+      if (messageText === AI_TEST_COMMAND && userChatId && chatType === 'private') {
+        const aiTestResult = await testOpenAi(env);
+        await sendTelegramMessage(env, userChatId, aiTestResult);
       }
 
       return jsonResponse({ ok: true });
