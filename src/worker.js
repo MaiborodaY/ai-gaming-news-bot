@@ -16,7 +16,9 @@ const DRAFT_NEWS_COMMAND = '/draft_news';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
+const NEWS_INDEX_KV_PREFIX = 'news:';
 const DRAFT_TTL_SECONDS = 60 * 60 * 24;
+const NEWS_INDEX_TTL_SECONDS = 60 * 60 * 24 * 7;
 const DRAFT_STATUS_DRAFT = 'draft';
 const DRAFT_STATUS_PUBLISHED = 'published';
 const DRAFT_STATUS_SKIPPED = 'skipped';
@@ -130,6 +132,10 @@ function normalizeNewsTitle(title) {
   return title.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function normalizeNewsLink(link) {
+  return link.trim().toLowerCase().replace(/#.*$/, '').replace(/\/+$/, '');
+}
+
 function parseFeedItems(xml, sourceName) {
   const rssItems = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
   const atomEntries = [...xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)];
@@ -200,6 +206,10 @@ function draftKey(draftId) {
   return `${DRAFT_KV_PREFIX}${draftId}`;
 }
 
+function newsIndexKey(item) {
+  return `${NEWS_INDEX_KV_PREFIX}${normalizeNewsLink(item.link)}`;
+}
+
 function publishDraftKeyboard(draftId) {
   return {
     inline_keyboard: [
@@ -234,6 +244,7 @@ async function saveDraft(env, item) {
   };
 
   await saveDraftRecord(env, draft);
+  await saveNewsIndexRecord(env, draft);
 
   return draftId;
 }
@@ -241,6 +252,23 @@ async function saveDraft(env, item) {
 async function saveDraftRecord(env, draft) {
   await env.DRAFTS.put(draftKey(draft.id), JSON.stringify(draft), {
     expirationTtl: DRAFT_TTL_SECONDS
+  });
+}
+
+async function saveNewsIndexRecord(env, draft) {
+  const indexRecord = {
+    draftId: draft.id,
+    status: draft.status,
+    source: draft.item.source,
+    title: draft.item.title,
+    link: draft.item.link,
+    createdAt: draft.createdAt,
+    publishedAt: draft.publishedAt ?? null,
+    skippedAt: draft.skippedAt ?? null
+  };
+
+  await env.DRAFTS.put(newsIndexKey(draft.item), JSON.stringify(indexRecord), {
+    expirationTtl: NEWS_INDEX_TTL_SECONDS
   });
 }
 
@@ -255,6 +283,30 @@ async function getDraft(env, draftId) {
   }
 
   return JSON.parse(rawDraft);
+}
+
+async function getNewsIndex(env, item) {
+  if (!env.DRAFTS) {
+    return null;
+  }
+
+  const rawIndex = await env.DRAFTS.get(newsIndexKey(item));
+  if (!rawIndex) {
+    return null;
+  }
+
+  return JSON.parse(rawIndex);
+}
+
+async function findFirstNewNewsItem(env, items) {
+  for (const item of items) {
+    const existingIndex = await getNewsIndex(env, item);
+    if (!existingIndex) {
+      return item;
+    }
+  }
+
+  return null;
 }
 
 async function fetchNewsSource(source) {
@@ -327,6 +379,7 @@ async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
     publishedAt: new Date().toISOString()
   };
   await saveDraftRecord(env, publishedDraft);
+  await saveNewsIndexRecord(env, publishedDraft);
 
   await answerCallbackQuery(env, callbackQueryId, 'Published ✅');
   await sendTelegramMessage(env, userChatId, 'Published to channel ✅');
@@ -364,6 +417,7 @@ async function handleSkipDraft(env, userChatId, callbackQueryId, draftId) {
     skippedAt: new Date().toISOString()
   };
   await saveDraftRecord(env, skippedDraft);
+  await saveNewsIndexRecord(env, skippedDraft);
 
   await answerCallbackQuery(env, callbackQueryId, 'Skipped');
   await sendTelegramMessage(env, userChatId, 'Draft skipped');
@@ -479,7 +533,12 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        const item = newsResult.items[0];
+        const item = await findFirstNewNewsItem(env, newsResult.items);
+        if (!item) {
+          await sendTelegramMessage(env, userChatId, 'No new news found');
+          return jsonResponse({ ok: true });
+        }
+
         const draftId = await saveDraft(env, item);
 
         if (!draftId) {
