@@ -1,7 +1,8 @@
 const START_COMMAND = '/start';
-const TEST_CHANNEL_COMMAND = '/test_channel';
 const START_REPLY = 'BroNews bot is alive ✅';
-const CHANNEL_TEST_POST = 'BroNews test post ✅';
+const TEST_CHANNEL_COMMAND = '/test_channel';
+const TEST_CHANNEL_POST_TEXT = 'BroNews test post ✅';
+const TEST_CHANNEL_CONFIRM_TEXT = 'Test post sent to channel ✅';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -60,27 +61,21 @@ export default {
       }
 
       const messageText = update?.message?.text;
-      const chatId = update?.message?.chat?.id;
+      const userChatId = update?.message?.chat?.id;
       const chatType = update?.message?.chat?.type;
 
-      if (!chatId) {
-        return jsonResponse({ ok: true });
+      if (messageText === START_COMMAND && userChatId) {
+        await sendTelegramMessage(env, userChatId, START_REPLY);
       }
 
-      if (messageText === START_COMMAND) {
-        await sendTelegramMessage(env, chatId, START_REPLY);
-        return jsonResponse({ ok: true });
-      }
-
-      if (messageText === TEST_CHANNEL_COMMAND && chatType === 'private') {
+      if (messageText === TEST_CHANNEL_COMMAND && userChatId && chatType === 'private') {
         if (!env.CHANNEL_ID) {
-          await sendTelegramMessage(env, chatId, 'CHANNEL_ID is not configured');
+          await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, env.CHANNEL_ID, CHANNEL_TEST_POST);
-        await sendTelegramMessage(env, chatId, 'Test post sent to channel ✅');
-        return jsonResponse({ ok: true });
+        await sendTelegramMessage(env, env.CHANNEL_ID, TEST_CHANNEL_POST_TEXT);
+        await sendTelegramMessage(env, userChatId, TEST_CHANNEL_CONFIRM_TEXT);
       }
 
       return jsonResponse({ ok: true });
