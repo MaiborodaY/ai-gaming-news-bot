@@ -12,9 +12,26 @@ Source: https://example.com`;
 const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
-const STEAM_NEWS_RSS_URL = 'https://store.steampowered.com/feeds/news.xml';
+const NEWS_SOURCES = [
+  {
+    name: 'Steam',
+    url: 'https://store.steampowered.com/feeds/news.xml'
+  },
+  {
+    name: 'PlayStation Blog',
+    url: 'https://blog.playstation.com/feed/'
+  },
+  {
+    name: 'Xbox Wire',
+    url: 'https://news.xbox.com/en-us/feed/'
+  },
+  {
+    name: 'Gematsu',
+    url: 'https://www.gematsu.com/feed'
+  }
+];
 const MAX_FEED_ITEMS_TO_SCAN = 20;
-const MAX_NEWS_ITEMS_TO_SHOW = 3;
+const MAX_NEWS_ITEMS_TO_SHOW = 5;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -86,29 +103,39 @@ function normalizeNewsTitle(title) {
   return title.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-function parseFeedItems(xml) {
+function parseFeedItems(xml, sourceName) {
   const rssItems = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
   const atomEntries = [...xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)];
   const blocks = rssItems.length > 0 ? rssItems : atomEntries;
+
+  return blocks
+    .slice(0, MAX_FEED_ITEMS_TO_SCAN)
+    .map((match) => {
+      const itemXml = match[1];
+      const title = getTagValue(itemXml, 'title');
+      const link = getLinkValue(itemXml);
+
+      if (!title || !link) {
+        return null;
+      }
+
+      return { source: sourceName, title, link };
+    })
+    .filter(Boolean);
+}
+
+function deduplicateNewsItems(items) {
   const seenTitles = new Set();
   const uniqueItems = [];
 
-  for (const match of blocks.slice(0, MAX_FEED_ITEMS_TO_SCAN)) {
-    const itemXml = match[1];
-    const title = getTagValue(itemXml, 'title');
-    const link = getLinkValue(itemXml);
-
-    if (!title || !link) {
-      continue;
-    }
-
-    const normalizedTitle = normalizeNewsTitle(title);
+  for (const item of items) {
+    const normalizedTitle = normalizeNewsTitle(item.title);
     if (seenTitles.has(normalizedTitle)) {
       continue;
     }
 
     seenTitles.add(normalizedTitle);
-    uniqueItems.push({ title, link });
+    uniqueItems.push(item);
 
     if (uniqueItems.length >= MAX_NEWS_ITEMS_TO_SHOW) {
       break;
@@ -118,9 +145,9 @@ function parseFeedItems(xml) {
   return uniqueItems;
 }
 
-async function fetchSteamNews() {
+async function fetchNewsSource(source) {
   try {
-    const response = await fetch(STEAM_NEWS_RSS_URL, {
+    const response = await fetch(source.url, {
       headers: {
         'user-agent': 'BroNewsBot/0.1 (+https://t.me/BroNews_bot)',
         accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*'
@@ -128,11 +155,21 @@ async function fetchSteamNews() {
     });
 
     if (!response.ok) {
-      return { ok: false, items: [] };
+      return [];
     }
 
     const xml = await response.text();
-    return { ok: true, items: parseFeedItems(xml) };
+    return parseFeedItems(xml, source.name);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchGamingNews() {
+  try {
+    const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
+    const allItems = sourceResults.flat();
+    return { ok: true, items: deduplicateNewsItems(allItems) };
   } catch {
     return { ok: false, items: [] };
   }
@@ -195,7 +232,7 @@ export default {
       }
 
       if (messageText === FETCH_NEWS_COMMAND && userChatId && chatType === 'private') {
-        const newsResult = await fetchSteamNews();
+        const newsResult = await fetchGamingNews();
 
         if (!newsResult.ok) {
           await sendTelegramMessage(env, userChatId, 'Failed to fetch news ❌');
@@ -208,7 +245,7 @@ export default {
         }
 
         const newsList = newsResult.items
-          .map((item, index) => `${index + 1}. ${item.title}\n${item.link}`)
+          .map((item, index) => `${index + 1}. [${item.source}] ${item.title}\n${item.link}`)
           .join('\n\n');
 
         await sendTelegramMessage(env, userChatId, `Latest gaming news:\n\n${newsList}`);
