@@ -13,6 +13,7 @@ const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
+const PUBLISH_DRAFT_CALLBACK = 'publish_draft_news';
 const NEWS_SOURCES = [
   {
     name: 'Steam',
@@ -43,30 +44,44 @@ function jsonResponse(data, status = 200) {
   });
 }
 
-async function sendTelegramMessage(env, chatId, text) {
+async function callTelegramApi(env, method, payload) {
   const token = env.TELEGRAM_BOT_TOKEN;
 
   if (!token) {
     throw new Error('Missing TELEGRAM_BOT_TOKEN');
   }
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json; charset=utf-8'
     },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      link_preview_options: {
-        is_disabled: true
-      }
-    })
+    body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
     throw new Error(`Telegram API error: ${response.status}`);
   }
+
+  return response.json();
+}
+
+async function sendTelegramMessage(env, chatId, text, extraPayload = {}) {
+  return callTelegramApi(env, 'sendMessage', {
+    chat_id: chatId,
+    text,
+    link_preview_options: {
+      is_disabled: true
+    },
+    ...extraPayload
+  });
+}
+
+async function answerCallbackQuery(env, callbackQueryId, text) {
+  return callTelegramApi(env, 'answerCallbackQuery', {
+    callback_query_id: callbackQueryId,
+    text
+  });
 }
 
 function decodeXmlEntities(value = '') {
@@ -162,6 +177,28 @@ function formatDraftNewsPost(item) {
 ${item.link}`;
 }
 
+function formatChannelNewsPost(item) {
+  return `🎮 ${item.title}
+
+Появилась новая игровая новость от ${item.source}. Полные детали доступны по ссылке ниже.
+
+Источник: ${item.source}
+${item.link}`;
+}
+
+function publishDraftKeyboard() {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: '✅ Опубликовать',
+          callback_data: PUBLISH_DRAFT_CALLBACK
+        }
+      ]
+    ]
+  };
+}
+
 async function fetchNewsSource(source) {
   try {
     const response = await fetch(source.url, {
@@ -192,6 +229,26 @@ async function fetchGamingNews() {
   }
 }
 
+async function handlePublishDraft(env, userChatId, callbackQueryId) {
+  if (!env.CHANNEL_ID) {
+    await answerCallbackQuery(env, callbackQueryId, 'CHANNEL_ID is not configured');
+    await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
+    return;
+  }
+
+  const newsResult = await fetchGamingNews();
+  if (!newsResult.ok || newsResult.items.length === 0) {
+    await answerCallbackQuery(env, callbackQueryId, 'Failed to publish news ❌');
+    await sendTelegramMessage(env, userChatId, 'Failed to publish news ❌');
+    return;
+  }
+
+  const post = formatChannelNewsPost(newsResult.items[0]);
+  await sendTelegramMessage(env, env.CHANNEL_ID, post);
+  await answerCallbackQuery(env, callbackQueryId, 'Published ✅');
+  await sendTelegramMessage(env, userChatId, 'Published to channel ✅');
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -214,6 +271,15 @@ export default {
         update = await request.json();
       } catch {
         return jsonResponse({ ok: false, error: 'Invalid JSON body' }, 400);
+      }
+
+      const callbackData = update?.callback_query?.data;
+      const callbackQueryId = update?.callback_query?.id;
+      const callbackChatId = update?.callback_query?.message?.chat?.id;
+
+      if (callbackData === PUBLISH_DRAFT_CALLBACK && callbackChatId && callbackQueryId) {
+        await handlePublishDraft(env, callbackChatId, callbackQueryId);
+        return jsonResponse({ ok: true });
       }
 
       const messageText = update?.message?.text;
@@ -281,7 +347,9 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, userChatId, formatDraftNewsPost(newsResult.items[0]));
+        await sendTelegramMessage(env, userChatId, formatDraftNewsPost(newsResult.items[0]), {
+          reply_markup: publishDraftKeyboard()
+        });
       }
 
       return jsonResponse({ ok: true });
