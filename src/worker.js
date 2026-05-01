@@ -13,7 +13,9 @@ const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
-const PUBLISH_DRAFT_CALLBACK = 'publish_draft_news';
+const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
+const DRAFT_KV_PREFIX = 'draft:';
+const DRAFT_TTL_SECONDS = 60 * 60 * 24;
 const NEWS_SOURCES = [
   {
     name: 'Steam',
@@ -186,17 +188,66 @@ function formatChannelNewsPost(item) {
 ${item.link}`;
 }
 
-function publishDraftKeyboard() {
+function createDraftId() {
+  return crypto.randomUUID();
+}
+
+function draftKey(draftId) {
+  return `${DRAFT_KV_PREFIX}${draftId}`;
+}
+
+function publishDraftKeyboard(draftId) {
   return {
     inline_keyboard: [
       [
         {
           text: '✅ Опубликовать',
-          callback_data: PUBLISH_DRAFT_CALLBACK
+          callback_data: `${PUBLISH_DRAFT_CALLBACK_PREFIX}${draftId}`
         }
       ]
     ]
   };
+}
+
+async function saveDraft(env, item) {
+  if (!env.DRAFTS) {
+    return null;
+  }
+
+  const draftId = createDraftId();
+  const draft = {
+    id: draftId,
+    item,
+    post: formatChannelNewsPost(item),
+    createdAt: new Date().toISOString()
+  };
+
+  await env.DRAFTS.put(draftKey(draftId), JSON.stringify(draft), {
+    expirationTtl: DRAFT_TTL_SECONDS
+  });
+
+  return draftId;
+}
+
+async function getDraft(env, draftId) {
+  if (!env.DRAFTS) {
+    return null;
+  }
+
+  const rawDraft = await env.DRAFTS.get(draftKey(draftId));
+  if (!rawDraft) {
+    return null;
+  }
+
+  return JSON.parse(rawDraft);
+}
+
+async function deleteDraft(env, draftId) {
+  if (!env.DRAFTS) {
+    return;
+  }
+
+  await env.DRAFTS.delete(draftKey(draftId));
 }
 
 async function fetchNewsSource(source) {
@@ -229,22 +280,28 @@ async function fetchGamingNews() {
   }
 }
 
-async function handlePublishDraft(env, userChatId, callbackQueryId) {
+async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
   if (!env.CHANNEL_ID) {
     await answerCallbackQuery(env, callbackQueryId, 'CHANNEL_ID is not configured');
     await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
     return;
   }
 
-  const newsResult = await fetchGamingNews();
-  if (!newsResult.ok || newsResult.items.length === 0) {
-    await answerCallbackQuery(env, callbackQueryId, 'Failed to publish news ❌');
-    await sendTelegramMessage(env, userChatId, 'Failed to publish news ❌');
+  if (!env.DRAFTS) {
+    await answerCallbackQuery(env, callbackQueryId, 'DRAFTS KV is not configured');
+    await sendTelegramMessage(env, userChatId, 'DRAFTS KV is not configured');
     return;
   }
 
-  const post = formatChannelNewsPost(newsResult.items[0]);
-  await sendTelegramMessage(env, env.CHANNEL_ID, post);
+  const draft = await getDraft(env, draftId);
+  if (!draft?.post) {
+    await answerCallbackQuery(env, callbackQueryId, 'Draft expired ❌');
+    await sendTelegramMessage(env, userChatId, 'Draft expired or not found ❌');
+    return;
+  }
+
+  await sendTelegramMessage(env, env.CHANNEL_ID, draft.post);
+  await deleteDraft(env, draftId);
   await answerCallbackQuery(env, callbackQueryId, 'Published ✅');
   await sendTelegramMessage(env, userChatId, 'Published to channel ✅');
 }
@@ -277,8 +334,9 @@ export default {
       const callbackQueryId = update?.callback_query?.id;
       const callbackChatId = update?.callback_query?.message?.chat?.id;
 
-      if (callbackData === PUBLISH_DRAFT_CALLBACK && callbackChatId && callbackQueryId) {
-        await handlePublishDraft(env, callbackChatId, callbackQueryId);
+      if (callbackData?.startsWith(PUBLISH_DRAFT_CALLBACK_PREFIX) && callbackChatId && callbackQueryId) {
+        const draftId = callbackData.slice(PUBLISH_DRAFT_CALLBACK_PREFIX.length);
+        await handlePublishDraft(env, callbackChatId, callbackQueryId, draftId);
         return jsonResponse({ ok: true });
       }
 
@@ -335,6 +393,11 @@ export default {
       }
 
       if (messageText === DRAFT_NEWS_COMMAND && userChatId && chatType === 'private') {
+        if (!env.DRAFTS) {
+          await sendTelegramMessage(env, userChatId, 'DRAFTS KV is not configured');
+          return jsonResponse({ ok: true });
+        }
+
         const newsResult = await fetchGamingNews();
 
         if (!newsResult.ok) {
@@ -347,8 +410,16 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, userChatId, formatDraftNewsPost(newsResult.items[0]), {
-          reply_markup: publishDraftKeyboard()
+        const item = newsResult.items[0];
+        const draftId = await saveDraft(env, item);
+
+        if (!draftId) {
+          await sendTelegramMessage(env, userChatId, 'Failed to save draft ❌');
+          return jsonResponse({ ok: true });
+        }
+
+        await sendTelegramMessage(env, userChatId, formatDraftNewsPost(item), {
+          reply_markup: publishDraftKeyboard(draftId)
         });
       }
 
