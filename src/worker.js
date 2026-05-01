@@ -3,6 +3,16 @@ const START_REPLY = 'BroNews bot is alive ✅';
 const TEST_CHANNEL_COMMAND = '/test_channel';
 const TEST_CHANNEL_POST_TEXT = 'BroNews test post ✅';
 const TEST_CHANNEL_CONFIRM_TEXT = 'Test post sent to channel ✅';
+const MOCK_NEWS_COMMAND = '/mock_news';
+const MOCK_NEWS_POST_TEXT = `🎮 Test gaming news
+
+This is a test news post from BroNews bot.
+
+Source: https://example.com`;
+const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
+const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
+const FETCH_NEWS_COMMAND = '/fetch_news';
+const STEAM_NEWS_RSS_URL = 'https://store.steampowered.com/feeds/news.xml';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -33,6 +43,52 @@ async function sendTelegramMessage(env, chatId, text) {
 
   if (!response.ok) {
     throw new Error(`Telegram API error: ${response.status}`);
+  }
+}
+
+async function fetchSteamNews() {
+  try {
+    const response = await fetch(STEAM_NEWS_RSS_URL);
+    if (!response.ok) {
+      return { ok: false, items: [] };
+    }
+
+    const xml = await response.text();
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 3);
+
+    const parsedItems = items
+      .map((match) => {
+        const itemXml = match[1];
+        const titleMatch = itemXml.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>|<title>([\s\S]*?)<\/title>/);
+        const linkMatch = itemXml.match(/<link>([\s\S]*?)<\/link>/);
+        const rawTitle = titleMatch?.[1] ?? titleMatch?.[2] ?? '';
+        const rawLink = linkMatch?.[1] ?? '';
+        const title = rawTitle
+          .replaceAll('&amp;', '&')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll('&quot;', '"')
+          .replaceAll('&#39;', "'")
+          .trim();
+        const link = rawLink
+          .replaceAll('&amp;', '&')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll('&quot;', '"')
+          .replaceAll('&#39;', "'")
+          .trim();
+
+        if (!title || !link) {
+          return null;
+        }
+
+        return { title, link };
+      })
+      .filter(Boolean);
+
+    return { ok: true, items: parsedItems };
+  } catch {
+    return { ok: false, items: [] };
   }
 }
 
@@ -76,6 +132,40 @@ export default {
 
         await sendTelegramMessage(env, env.CHANNEL_ID, TEST_CHANNEL_POST_TEXT);
         await sendTelegramMessage(env, userChatId, TEST_CHANNEL_CONFIRM_TEXT);
+      }
+
+      if (messageText === MOCK_NEWS_COMMAND && userChatId && chatType === 'private') {
+        if (!env.CHANNEL_ID) {
+          await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
+          return jsonResponse({ ok: true });
+        }
+
+        try {
+          await sendTelegramMessage(env, env.CHANNEL_ID, MOCK_NEWS_POST_TEXT);
+          await sendTelegramMessage(env, userChatId, MOCK_NEWS_CONFIRM_TEXT);
+        } catch {
+          await sendTelegramMessage(env, userChatId, MOCK_NEWS_ERROR_TEXT);
+        }
+      }
+
+      if (messageText === FETCH_NEWS_COMMAND && userChatId && chatType === 'private') {
+        const newsResult = await fetchSteamNews();
+
+        if (!newsResult.ok) {
+          await sendTelegramMessage(env, userChatId, 'Failed to fetch news ❌');
+          return jsonResponse({ ok: true });
+        }
+
+        if (newsResult.items.length === 0) {
+          await sendTelegramMessage(env, userChatId, 'No news found');
+          return jsonResponse({ ok: true });
+        }
+
+        const newsList = newsResult.items
+          .map((item, index) => `${index + 1}. ${item.title}\n${item.link}`)
+          .join('\n\n');
+
+        await sendTelegramMessage(env, userChatId, `Latest gaming news:\n\n${newsList}`);
       }
 
       return jsonResponse({ ok: true });
