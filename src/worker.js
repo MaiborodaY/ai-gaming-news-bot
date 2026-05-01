@@ -13,6 +13,8 @@ const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const STEAM_NEWS_RSS_URL = 'https://store.steampowered.com/feeds/news.xml';
+const MAX_FEED_ITEMS_TO_SCAN = 20;
+const MAX_NEWS_ITEMS_TO_SHOW = 3;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -80,25 +82,40 @@ function getLinkValue(xml) {
   return hrefMatch?.[1] ? decodeXmlEntities(hrefMatch[1]).trim() : '';
 }
 
+function normalizeNewsTitle(title) {
+  return title.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
 function parseFeedItems(xml) {
   const rssItems = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
   const atomEntries = [...xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)];
   const blocks = rssItems.length > 0 ? rssItems : atomEntries;
+  const seenTitles = new Set();
+  const uniqueItems = [];
 
-  return blocks
-    .slice(0, 3)
-    .map((match) => {
-      const itemXml = match[1];
-      const title = getTagValue(itemXml, 'title');
-      const link = getLinkValue(itemXml);
+  for (const match of blocks.slice(0, MAX_FEED_ITEMS_TO_SCAN)) {
+    const itemXml = match[1];
+    const title = getTagValue(itemXml, 'title');
+    const link = getLinkValue(itemXml);
 
-      if (!title || !link) {
-        return null;
-      }
+    if (!title || !link) {
+      continue;
+    }
 
-      return { title, link };
-    })
-    .filter(Boolean);
+    const normalizedTitle = normalizeNewsTitle(title);
+    if (seenTitles.has(normalizedTitle)) {
+      continue;
+    }
+
+    seenTitles.add(normalizedTitle);
+    uniqueItems.push({ title, link });
+
+    if (uniqueItems.length >= MAX_NEWS_ITEMS_TO_SHOW) {
+      break;
+    }
+  }
+
+  return uniqueItems;
 }
 
 async function fetchSteamNews() {
