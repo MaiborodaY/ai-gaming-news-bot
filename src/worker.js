@@ -3,6 +3,14 @@ const START_REPLY = 'BroNews bot is alive ✅';
 const TEST_CHANNEL_COMMAND = '/test_channel';
 const TEST_CHANNEL_POST_TEXT = 'BroNews test post ✅';
 const TEST_CHANNEL_CONFIRM_TEXT = 'Test post sent to channel ✅';
+const MOCK_NEWS_COMMAND = '/mock_news';
+const MOCK_NEWS_POST_TEXT = `🎮 Test gaming news
+
+This is a test news post from BroNews bot.
+
+Source: https://example.com`;
+const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
+const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -76,6 +84,20 @@ export default {
 
         await sendTelegramMessage(env, env.CHANNEL_ID, TEST_CHANNEL_POST_TEXT);
         await sendTelegramMessage(env, userChatId, TEST_CHANNEL_CONFIRM_TEXT);
+      }
+
+      if (messageText === MOCK_NEWS_COMMAND && userChatId && chatType === 'private') {
+        if (!env.CHANNEL_ID) {
+          await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
+          return jsonResponse({ ok: true });
+        }
+
+        try {
+          await sendTelegramMessage(env, env.CHANNEL_ID, MOCK_NEWS_POST_TEXT);
+          await sendTelegramMessage(env, userChatId, MOCK_NEWS_CONFIRM_TEXT);
+        } catch {
+          await sendTelegramMessage(env, userChatId, MOCK_NEWS_ERROR_TEXT);
+        }
       }
 
       return jsonResponse({ ok: true });
