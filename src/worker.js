@@ -23,6 +23,8 @@ const NEWS_MAX_AGE_DAYS = 3;
 const DRAFT_STATUS_DRAFT = 'draft';
 const DRAFT_STATUS_PUBLISHED = 'published';
 const DRAFT_STATUS_SKIPPED = 'skipped';
+const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini';
 const NEWS_SOURCES = [
   {
     name: 'Steam',
@@ -220,10 +222,8 @@ function deduplicateNewsItems(items) {
   return uniqueItems;
 }
 
-function formatDraftNewsPost(item) {
-  return `📝 Черновик поста
-
-🎮 ${item.title}
+function formatFallbackNewsPost(item) {
+  return `🎮 ${item.title}
 
 Появилась новая игровая новость от ${item.source}. Полные детали доступны по ссылке ниже.
 
@@ -231,13 +231,89 @@ function formatDraftNewsPost(item) {
 ${item.link}`;
 }
 
-function formatChannelNewsPost(item) {
-  return `🎮 ${item.title}
+function formatDraftMessage(post) {
+  return `📝 Черновик поста
 
-Появилась новая игровая новость от ${item.source}. Полные детали доступны по ссылке ниже.
+${post}`;
+}
 
-Источник: ${item.source}
-${item.link}`;
+function cleanAiPost(text) {
+  return text
+    .replace(/```[a-z]*\n?/gi, '')
+    .replace(/```/g, '')
+    .trim();
+}
+
+function ensureSourceAndLink(post, item) {
+  const hasSource = post.includes(`Источник: ${item.source}`);
+  const hasLink = post.includes(item.link);
+
+  if (hasSource && hasLink) {
+    return post;
+  }
+
+  return `${post}\n\nИсточник: ${item.source}\n${item.link}`;
+}
+
+function sanitizeAiPost(text, item) {
+  const cleanedPost = cleanAiPost(text);
+  if (!cleanedPost) {
+    return null;
+  }
+
+  return ensureSourceAndLink(cleanedPost, item).slice(0, 3500);
+}
+
+async function generateAiNewsPost(env, item) {
+  if (!env.OPENAI_API_KEY) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(OPENAI_API_URL, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        'content-type': 'application/json; charset=utf-8'
+      },
+      body: JSON.stringify({
+        model: env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Ты редактор Telegram-канала BroNews World про игровые новости. Пиши живо, коротко и понятно на русском языке. Не выдумывай факты, которых нет в заголовке. Не используй Markdown-разметку, жирный текст, списки и хэштеги.'
+          },
+          {
+            role: 'user',
+            content: `Создай короткий пост для Telegram по новости.\n\nТребования:\n- 1 эмодзи в начале заголовка.\n- 1 короткий заголовок.\n- 1-2 предложения описания.\n- В конце обязательно добавь:\nИсточник: ${item.source}\n${item.link}\n\nНовость:\nИсточник: ${item.source}\nЗаголовок: ${item.title}\nДата новости: ${item.publishedAt || 'unknown'}\nСсылка: ${item.link}`
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 220
+      })
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json();
+    const text = data?.choices?.[0]?.message?.content;
+
+    if (!text) {
+      return null;
+    }
+
+    return sanitizeAiPost(text, item);
+  } catch {
+    return null;
+  }
+}
+
+async function createNewsPost(env, item) {
+  const aiPost = await generateAiNewsPost(env, item);
+  return aiPost || formatFallbackNewsPost(item);
 }
 
 function createDraftId() {
@@ -269,7 +345,7 @@ function publishDraftKeyboard(draftId) {
   };
 }
 
-async function saveDraft(env, item) {
+async function saveDraft(env, item, post) {
   if (!env.DRAFTS) {
     return null;
   }
@@ -279,7 +355,7 @@ async function saveDraft(env, item) {
     id: draftId,
     status: DRAFT_STATUS_DRAFT,
     item,
-    post: formatChannelNewsPost(item),
+    post,
     createdAt: new Date().toISOString(),
     publishedAt: null,
     skippedAt: null
@@ -582,14 +658,15 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        const draftId = await saveDraft(env, item);
+        const post = await createNewsPost(env, item);
+        const draftId = await saveDraft(env, item, post);
 
         if (!draftId) {
           await sendTelegramMessage(env, userChatId, 'Failed to save draft ❌');
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, userChatId, formatDraftNewsPost(item), {
+        await sendTelegramMessage(env, userChatId, formatDraftMessage(post), {
           reply_markup: publishDraftKeyboard(draftId)
         });
       }
