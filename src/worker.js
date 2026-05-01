@@ -340,7 +340,10 @@ async function testOpenAi(env) {
     });
 
     if (!response.ok) {
-      return `AI test failed ❌ status: ${response.status}`;
+      const errorText = (await response.text()).trim().slice(0, 1000);
+      return errorText
+        ? `AI test failed ❌ status: ${response.status}\n${errorText}`
+        : `AI test failed ❌ status: ${response.status}`;
     }
 
     const data = await response.json();
