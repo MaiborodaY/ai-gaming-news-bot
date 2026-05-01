@@ -1,3 +1,6 @@
+const START_COMMAND = '/start';
+const START_REPLY = 'BroNews bot is alive ✅';
+
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -57,8 +60,8 @@ export default {
       const messageText = update?.message?.text;
       const chatId = update?.message?.chat?.id;
 
-      if (messageText === '/start' && chatId) {
-        await sendTelegramMessage(env, chatId, 'BroNews bot is alive ✅');
+      if (messageText === START_COMMAND && chatId) {
+        await sendTelegramMessage(env, chatId, START_REPLY);
       }
 
       return jsonResponse({ ok: true });
