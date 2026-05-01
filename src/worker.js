@@ -46,6 +46,7 @@ const NEWS_SOURCES = [
 ];
 const MAX_FEED_ITEMS_TO_SCAN = 20;
 const MAX_NEWS_ITEMS_TO_SHOW = 5;
+const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 20;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -202,7 +203,7 @@ function parseFeedItems(xml, sourceName) {
     .filter(isRecentNewsItem);
 }
 
-function deduplicateNewsItems(items) {
+function deduplicateNewsItems(items, maxItems = MAX_NEWS_ITEMS_TO_SHOW) {
   const seenTitles = new Set();
   const uniqueItems = [];
 
@@ -215,7 +216,7 @@ function deduplicateNewsItems(items) {
     seenTitles.add(normalizedTitle);
     uniqueItems.push(item);
 
-    if (uniqueItems.length >= MAX_NEWS_ITEMS_TO_SHOW) {
+    if (uniqueItems.length >= maxItems) {
       break;
     }
   }
@@ -496,11 +497,13 @@ async function fetchNewsSource(source) {
   }
 }
 
-async function fetchGamingNews() {
+async function fetchGamingNews({ maxItems = MAX_NEWS_ITEMS_TO_SHOW } = {}) {
   try {
     const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
     const allItems = sourceResults.flat();
-    return { ok: true, items: deduplicateNewsItems(allItems) };
+
+    // /fetch_news shows a short list, but /draft_news scans deeper to skip already processed links.
+    return { ok: true, items: deduplicateNewsItems(allItems, maxItems) };
   } catch {
     return { ok: false, items: [] };
   }
@@ -688,7 +691,7 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        const newsResult = await fetchGamingNews();
+        const newsResult = await fetchGamingNews({ maxItems: MAX_DRAFT_NEWS_ITEMS_TO_SCAN });
 
         if (!newsResult.ok) {
           await sendTelegramMessage(env, userChatId, 'Failed to create draft news ❌');
