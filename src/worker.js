@@ -57,7 +57,10 @@ async function sendTelegramMessage(env, chatId, text) {
     },
     body: JSON.stringify({
       chat_id: chatId,
-      text
+      text,
+      link_preview_options: {
+        is_disabled: true
+      }
     })
   });
 
