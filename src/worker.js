@@ -13,6 +13,7 @@ const MOCK_NEWS_CONFIRM_TEXT = 'Mock news sent to channel ✅';
 const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
+const AI_TEST_COMMAND = '/ai_test';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
