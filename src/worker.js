@@ -1,12 +1,9 @@
 const START_COMMAND = '/start';
-const START_REPLY = 'BroNews bot is alive ✅';
-
 const TEST_CHANNEL_COMMAND = '/test_channel';
-const TEST_CHANNEL_POST_TEXT = 'BroNews test post ✅';
-const TEST_CHANNEL_CONFIRM_TEXT = 'Test post sent to channel ✅';
-
+const START_REPLY = 'BroNews bot is alive ✅';
+const CHANNEL_TEST_POST = 'BroNews test post ✅';
 const MOCK_NEWS_COMMAND = '/mock_news';
-const MOCK_NEWS_POST_TEXT = `🎮 Test gaming news\n\nThis is a test news post from BroNews bot.\n\nSource: https://example.com`;
+const MOCK_NEWS_POST = `🎮 Test gaming news\n\nThis is a test news post from BroNews bot.\n\nSource: https://example.com`;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -83,10 +80,11 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, env.CHANNEL_ID, TEST_CHANNEL_POST_TEXT);
-        await sendTelegramMessage(env, chatId, TEST_CHANNEL_CONFIRM_TEXT);
+        await sendTelegramMessage(env, env.CHANNEL_ID, CHANNEL_TEST_POST);
+        await sendTelegramMessage(env, chatId, 'Test post sent to channel ✅');
         return jsonResponse({ ok: true });
       }
+
 
       if (messageText === MOCK_NEWS_COMMAND && chatType === 'private') {
         if (!env.CHANNEL_ID) {
@@ -95,7 +93,7 @@ export default {
         }
 
         try {
-          await sendTelegramMessage(env, env.CHANNEL_ID, MOCK_NEWS_POST_TEXT);
+          await sendTelegramMessage(env, env.CHANNEL_ID, MOCK_NEWS_POST);
           await sendTelegramMessage(env, chatId, 'Mock news sent to channel ✅');
         } catch {
           await sendTelegramMessage(env, chatId, 'Failed to send mock news ❌');
