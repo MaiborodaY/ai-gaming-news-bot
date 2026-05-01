@@ -46,44 +46,76 @@ async function sendTelegramMessage(env, chatId, text) {
   }
 }
 
-function decodeXmlEntities(value) {
+function decodeXmlEntities(value = '') {
   return value
     .replaceAll('&amp;', '&')
     .replaceAll('&lt;', '<')
     .replaceAll('&gt;', '>')
     .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
     .replaceAll('&#39;', "'");
+}
+
+function getTagValue(xml, tagName) {
+  const cdataMatch = xml.match(new RegExp(`<${tagName}[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*<\\/${tagName}>`, 'i'));
+  if (cdataMatch?.[1]) {
+    return decodeXmlEntities(cdataMatch[1]).trim();
+  }
+
+  const plainMatch = xml.match(new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i'));
+  if (plainMatch?.[1]) {
+    return decodeXmlEntities(plainMatch[1]).trim();
+  }
+
+  return '';
+}
+
+function getLinkValue(xml) {
+  const textLink = getTagValue(xml, 'link');
+  if (textLink) {
+    return textLink;
+  }
+
+  const hrefMatch = xml.match(/<link[^>]+href=["']([^"']+)["'][^>]*\/?\s*>/i);
+  return hrefMatch?.[1] ? decodeXmlEntities(hrefMatch[1]).trim() : '';
+}
+
+function parseFeedItems(xml) {
+  const rssItems = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
+  const atomEntries = [...xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)];
+  const blocks = rssItems.length > 0 ? rssItems : atomEntries;
+
+  return blocks
+    .slice(0, 3)
+    .map((match) => {
+      const itemXml = match[1];
+      const title = getTagValue(itemXml, 'title');
+      const link = getLinkValue(itemXml);
+
+      if (!title || !link) {
+        return null;
+      }
+
+      return { title, link };
+    })
+    .filter(Boolean);
 }
 
 async function fetchSteamNews() {
   try {
-    const response = await fetch(STEAM_NEWS_RSS_URL);
+    const response = await fetch(STEAM_NEWS_RSS_URL, {
+      headers: {
+        'user-agent': 'BroNewsBot/0.1 (+https://t.me/BroNews_bot)',
+        accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*'
+      }
+    });
+
     if (!response.ok) {
       return { ok: false, items: [] };
     }
 
     const xml = await response.text();
-    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 3);
-
-    const parsedItems = items
-      .map((match) => {
-        const itemXml = match[1];
-        const titleMatch = itemXml.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>|<title>([\s\S]*?)<\/title>/);
-        const linkMatch = itemXml.match(/<link>([\s\S]*?)<\/link>/);
-        const rawTitle = titleMatch?.[1] ?? titleMatch?.[2] ?? '';
-        const rawLink = linkMatch?.[1] ?? '';
-        const title = decodeXmlEntities(rawTitle).trim();
-        const link = decodeXmlEntities(rawLink).trim();
-
-        if (!title || !link) {
-          return null;
-        }
-
-        return { title, link };
-      })
-      .filter(Boolean);
-
-    return { ok: true, items: parsedItems };
+    return { ok: true, items: parseFeedItems(xml) };
   } catch {
     return { ok: false, items: [] };
   }
