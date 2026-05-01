@@ -46,15 +46,6 @@ async function sendTelegramMessage(env, chatId, text) {
   }
 }
 
-function decodeXmlEntities(value) {
-  return value
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'");
-}
-
 async function fetchSteamNews() {
   try {
     const response = await fetch(STEAM_NEWS_RSS_URL);
@@ -72,8 +63,20 @@ async function fetchSteamNews() {
         const linkMatch = itemXml.match(/<link>([\s\S]*?)<\/link>/);
         const rawTitle = titleMatch?.[1] ?? titleMatch?.[2] ?? '';
         const rawLink = linkMatch?.[1] ?? '';
-        const title = decodeXmlEntities(rawTitle).trim();
-        const link = decodeXmlEntities(rawLink).trim();
+        const title = rawTitle
+          .replaceAll('&amp;', '&')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll('&quot;', '"')
+          .replaceAll('&#39;', "'")
+          .trim();
+        const link = rawLink
+          .replaceAll('&amp;', '&')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll('&quot;', '"')
+          .replaceAll('&#39;', "'")
+          .trim();
 
         if (!title || !link) {
           return null;
