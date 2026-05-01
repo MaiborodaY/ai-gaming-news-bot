@@ -19,6 +19,7 @@ const DRAFT_KV_PREFIX = 'draft:';
 const NEWS_INDEX_KV_PREFIX = 'news:';
 const DRAFT_TTL_SECONDS = 60 * 60 * 24;
 const NEWS_INDEX_TTL_SECONDS = 60 * 60 * 24 * 7;
+const NEWS_MAX_AGE_DAYS = 3;
 const DRAFT_STATUS_DRAFT = 'draft';
 const DRAFT_STATUS_PUBLISHED = 'published';
 const DRAFT_STATUS_SKIPPED = 'skipped';
@@ -118,6 +119,17 @@ function getTagValue(xml, tagName) {
   return '';
 }
 
+function getFirstTagValue(xml, tagNames) {
+  for (const tagName of tagNames) {
+    const value = getTagValue(xml, tagName);
+    if (value) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
 function getLinkValue(xml) {
   const textLink = getTagValue(xml, 'link');
   if (textLink) {
@@ -136,6 +148,33 @@ function normalizeNewsLink(link) {
   return link.trim().toLowerCase().replace(/#.*$/, '').replace(/\/+$/, '');
 }
 
+function parsePublishedAt(value) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  return new Date(timestamp).toISOString();
+}
+
+function isRecentNewsItem(item) {
+  if (!item.publishedAt) {
+    return true;
+  }
+
+  const publishedTimestamp = Date.parse(item.publishedAt);
+  if (Number.isNaN(publishedTimestamp)) {
+    return true;
+  }
+
+  const maxAgeMs = NEWS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  return Date.now() - publishedTimestamp <= maxAgeMs;
+}
+
 function parseFeedItems(xml, sourceName) {
   const rssItems = [...xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/gi)];
   const atomEntries = [...xml.matchAll(/<entry\b[^>]*>([\s\S]*?)<\/entry>/gi)];
@@ -147,14 +186,17 @@ function parseFeedItems(xml, sourceName) {
       const itemXml = match[1];
       const title = getTagValue(itemXml, 'title');
       const link = getLinkValue(itemXml);
+      const rawPublishedAt = getFirstTagValue(itemXml, ['pubDate', 'published', 'updated', 'dc:date']);
+      const publishedAt = parsePublishedAt(rawPublishedAt);
 
       if (!title || !link) {
         return null;
       }
 
-      return { source: sourceName, title, link };
+      return { source: sourceName, title, link, publishedAt };
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(isRecentNewsItem);
 }
 
 function deduplicateNewsItems(items) {
@@ -262,6 +304,7 @@ async function saveNewsIndexRecord(env, draft) {
     source: draft.item.source,
     title: draft.item.title,
     link: draft.item.link,
+    newsPublishedAt: draft.item.publishedAt ?? null,
     createdAt: draft.createdAt,
     publishedAt: draft.publishedAt ?? null,
     skippedAt: draft.skippedAt ?? null
