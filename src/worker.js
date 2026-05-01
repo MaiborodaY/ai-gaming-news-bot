@@ -14,10 +14,12 @@ const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
+const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
 const DRAFT_TTL_SECONDS = 60 * 60 * 24;
 const DRAFT_STATUS_DRAFT = 'draft';
 const DRAFT_STATUS_PUBLISHED = 'published';
+const DRAFT_STATUS_SKIPPED = 'skipped';
 const NEWS_SOURCES = [
   {
     name: 'Steam',
@@ -205,6 +207,10 @@ function publishDraftKeyboard(draftId) {
         {
           text: '✅ Опубликовать',
           callback_data: `${PUBLISH_DRAFT_CALLBACK_PREFIX}${draftId}`
+        },
+        {
+          text: '❌ Пропустить',
+          callback_data: `${SKIP_DRAFT_CALLBACK_PREFIX}${draftId}`
         }
       ]
     ]
@@ -223,7 +229,8 @@ async function saveDraft(env, item) {
     item,
     post: formatChannelNewsPost(item),
     createdAt: new Date().toISOString(),
-    publishedAt: null
+    publishedAt: null,
+    skippedAt: null
   };
 
   await saveDraftRecord(env, draft);
@@ -306,6 +313,12 @@ async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
     return;
   }
 
+  if (draft.status === DRAFT_STATUS_SKIPPED) {
+    await answerCallbackQuery(env, callbackQueryId, 'Already skipped');
+    await sendTelegramMessage(env, userChatId, 'This draft was skipped');
+    return;
+  }
+
   await sendTelegramMessage(env, env.CHANNEL_ID, draft.post);
 
   const publishedDraft = {
@@ -317,6 +330,43 @@ async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
 
   await answerCallbackQuery(env, callbackQueryId, 'Published ✅');
   await sendTelegramMessage(env, userChatId, 'Published to channel ✅');
+}
+
+async function handleSkipDraft(env, userChatId, callbackQueryId, draftId) {
+  if (!env.DRAFTS) {
+    await answerCallbackQuery(env, callbackQueryId, 'DRAFTS KV is not configured');
+    await sendTelegramMessage(env, userChatId, 'DRAFTS KV is not configured');
+    return;
+  }
+
+  const draft = await getDraft(env, draftId);
+  if (!draft?.post) {
+    await answerCallbackQuery(env, callbackQueryId, 'Draft expired ❌');
+    await sendTelegramMessage(env, userChatId, 'Draft expired or not found ❌');
+    return;
+  }
+
+  if (draft.status === DRAFT_STATUS_PUBLISHED) {
+    await answerCallbackQuery(env, callbackQueryId, 'Already published ✅');
+    await sendTelegramMessage(env, userChatId, 'This draft was already published ✅');
+    return;
+  }
+
+  if (draft.status === DRAFT_STATUS_SKIPPED) {
+    await answerCallbackQuery(env, callbackQueryId, 'Already skipped');
+    await sendTelegramMessage(env, userChatId, 'This draft was already skipped');
+    return;
+  }
+
+  const skippedDraft = {
+    ...draft,
+    status: DRAFT_STATUS_SKIPPED,
+    skippedAt: new Date().toISOString()
+  };
+  await saveDraftRecord(env, skippedDraft);
+
+  await answerCallbackQuery(env, callbackQueryId, 'Skipped');
+  await sendTelegramMessage(env, userChatId, 'Draft skipped');
 }
 
 export default {
@@ -350,6 +400,12 @@ export default {
       if (callbackData?.startsWith(PUBLISH_DRAFT_CALLBACK_PREFIX) && callbackChatId && callbackQueryId) {
         const draftId = callbackData.slice(PUBLISH_DRAFT_CALLBACK_PREFIX.length);
         await handlePublishDraft(env, callbackChatId, callbackQueryId, draftId);
+        return jsonResponse({ ok: true });
+      }
+
+      if (callbackData?.startsWith(SKIP_DRAFT_CALLBACK_PREFIX) && callbackChatId && callbackQueryId) {
+        const draftId = callbackData.slice(SKIP_DRAFT_CALLBACK_PREFIX.length);
+        await handleSkipDraft(env, callbackChatId, callbackQueryId, draftId);
         return jsonResponse({ ok: true });
       }
 
