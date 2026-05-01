@@ -16,6 +16,8 @@ const DRAFT_NEWS_COMMAND = '/draft_news';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
 const DRAFT_TTL_SECONDS = 60 * 60 * 24;
+const DRAFT_STATUS_DRAFT = 'draft';
+const DRAFT_STATUS_PUBLISHED = 'published';
 const NEWS_SOURCES = [
   {
     name: 'Steam',
@@ -217,16 +219,22 @@ async function saveDraft(env, item) {
   const draftId = createDraftId();
   const draft = {
     id: draftId,
+    status: DRAFT_STATUS_DRAFT,
     item,
     post: formatChannelNewsPost(item),
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    publishedAt: null
   };
 
-  await env.DRAFTS.put(draftKey(draftId), JSON.stringify(draft), {
-    expirationTtl: DRAFT_TTL_SECONDS
-  });
+  await saveDraftRecord(env, draft);
 
   return draftId;
+}
+
+async function saveDraftRecord(env, draft) {
+  await env.DRAFTS.put(draftKey(draft.id), JSON.stringify(draft), {
+    expirationTtl: DRAFT_TTL_SECONDS
+  });
 }
 
 async function getDraft(env, draftId) {
@@ -240,14 +248,6 @@ async function getDraft(env, draftId) {
   }
 
   return JSON.parse(rawDraft);
-}
-
-async function deleteDraft(env, draftId) {
-  if (!env.DRAFTS) {
-    return;
-  }
-
-  await env.DRAFTS.delete(draftKey(draftId));
 }
 
 async function fetchNewsSource(source) {
@@ -300,8 +300,21 @@ async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
     return;
   }
 
+  if (draft.status === DRAFT_STATUS_PUBLISHED) {
+    await answerCallbackQuery(env, callbackQueryId, 'Already published ✅');
+    await sendTelegramMessage(env, userChatId, 'This draft was already published ✅');
+    return;
+  }
+
   await sendTelegramMessage(env, env.CHANNEL_ID, draft.post);
-  await deleteDraft(env, draftId);
+
+  const publishedDraft = {
+    ...draft,
+    status: DRAFT_STATUS_PUBLISHED,
+    publishedAt: new Date().toISOString()
+  };
+  await saveDraftRecord(env, publishedDraft);
+
   await answerCallbackQuery(env, callbackQueryId, 'Published ✅');
   await sendTelegramMessage(env, userChatId, 'Published to channel ✅');
 }
