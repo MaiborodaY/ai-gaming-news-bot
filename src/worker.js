@@ -18,6 +18,7 @@ const DEBUG_IMAGES_COMMAND = '/debug_images';
 const RESET_NEWS_INDEX_COMMAND = '/reset_news_index';
 const ADMIN_COMMAND = '/admin';
 const STATS_COMMAND = '/stats';
+const SOURCES_COMMAND = '/sources';
 const ADMIN_HELP_TEXT = `BroNews admin commands:
 
 /draft_news — create AI draft from latest unprocessed news
@@ -25,6 +26,7 @@ const ADMIN_HELP_TEXT = `BroNews admin commands:
 /debug_images — debug image detection for latest news
 /reset_news_index — reset processed news index for testing
 /stats — show bot draft and source stats
+/sources — show RSS source diagnostics
 /ai_test — check OpenAI API connection
 /test_channel — send test message to channel
 /mock_news — send mock news post to channel
@@ -1002,6 +1004,78 @@ async function fetchNewsSource(source) {
   }
 }
 
+async function getSourceDiagnostics(source) {
+  try {
+    const response = await fetch(source.url, {
+      headers: {
+        'user-agent': 'BroNewsBot/0.1 (+https://t.me/BroNews_bot)',
+        accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*'
+      }
+    });
+
+    if (!response.ok) {
+      return {
+        source: source.name,
+        feedUrl: source.url,
+        itemsFound: 0,
+        recentItems: 0,
+        withImage: 0,
+        status: `❌ failed HTTP ${response.status}`
+      };
+    }
+
+    const xml = await response.text();
+    const parsedItems = parseFeedItems(xml, source.name);
+    const itemsWithImages = await Promise.all(parsedItems.map(enrichNewsItemImage));
+    const withImage = itemsWithImages.filter((item) => Boolean(item.imageUrl)).length;
+
+    let status = '✅ ok';
+    if (parsedItems.length === 0) {
+      status = '⚠️ empty';
+    } else if (withImage === 0) {
+      status = '⚠️ no images';
+    }
+
+    return {
+      source: source.name,
+      feedUrl: source.url,
+      itemsFound: parsedItems.length,
+      recentItems: parsedItems.length,
+      withImage,
+      status
+    };
+  } catch {
+    return {
+      source: source.name,
+      feedUrl: source.url,
+      itemsFound: 0,
+      recentItems: 0,
+      withImage: 0,
+      status: '❌ failed network error'
+    };
+  }
+}
+
+async function getSourcesDiagnostics() {
+  return Promise.all(NEWS_SOURCES.map(getSourceDiagnostics));
+}
+
+function formatSourcesDiagnosticsMessage(results) {
+  const lines = ['🗞 BroNews sources', ''];
+
+  for (const [index, result] of results.entries()) {
+    lines.push(`${index + 1}. ${result.source}`);
+    lines.push(`Feed: ${result.feedUrl}`);
+    lines.push(`Items found: ${result.itemsFound}`);
+    lines.push(`Recent items: ${result.recentItems}`);
+    lines.push(`With image: ${result.withImage}`);
+    lines.push(`Status: ${result.status}`);
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
+}
+
 async function fetchGamingNews({ maxItems = MAX_NEWS_ITEMS_TO_SHOW } = {}) {
   try {
     const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
@@ -1108,6 +1182,7 @@ async function handleSkipDraft(env, userChatId, callbackQueryId, draftId) {
 export {
   deduplicateNewsItems,
   formatStatsMessage,
+  formatSourcesDiagnosticsMessage,
   formatImageDebugList,
   isSupportedImageUrl,
   normalizeNewsLink,
@@ -1174,6 +1249,21 @@ export default {
         }
 
         await sendTelegramMessage(env, userChatId, formatStatsMessage(stats));
+      }
+
+      if (messageText === SOURCES_COMMAND && userChatId && chatType === 'private') {
+        const diagnostics = await getSourcesDiagnostics();
+        const sourceBlocks = diagnostics.map((result, index) =>
+          [
+            `${index + 1}. ${result.source}`,
+            `Feed: ${result.feedUrl}`,
+            `Items found: ${result.itemsFound}`,
+            `Recent items: ${result.recentItems}`,
+            `With image: ${result.withImage}`,
+            `Status: ${result.status}`
+          ].join('\n')
+        );
+        await sendLongTelegramMessage(env, userChatId, '🗞 BroNews sources', sourceBlocks);
       }
 
       if (messageText === TEST_CHANNEL_COMMAND && userChatId && chatType === 'private') {

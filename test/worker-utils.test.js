@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   deduplicateNewsItems,
   formatStatsMessage,
+  formatSourcesDiagnosticsMessage,
   formatImageDebugList,
   isSupportedImageUrl,
   normalizeNewsLink,
@@ -105,4 +106,33 @@ test('formatStatsMessage renders compact stats output', () => {
   assert.match(text, /Processed news index: 27/);
   assert.match(text, /Today UTC:/);
   assert.match(text, /PlayStation Blog: 7/);
+});
+
+test('formatSourcesDiagnosticsMessage renders source diagnostics', () => {
+  const text = formatSourcesDiagnosticsMessage([
+    {
+      source: 'Steam',
+      feedUrl: 'https://store.steampowered.com/feeds/news.xml',
+      itemsFound: 3,
+      recentItems: 3,
+      withImage: 1,
+      status: '✅ ok'
+    },
+    {
+      source: 'Gematsu',
+      feedUrl: 'https://www.gematsu.com/feed',
+      itemsFound: 0,
+      recentItems: 0,
+      withImage: 0,
+      status: '⚠️ empty'
+    }
+  ]);
+
+  assert.match(text, /🗞 BroNews sources/);
+  assert.match(text, /1\. Steam/);
+  assert.match(text, /Feed: https:\/\/store\.steampowered\.com\/feeds\/news\.xml/);
+  assert.match(text, /With image: 1/);
+  assert.match(text, /Status: ✅ ok/);
+  assert.match(text, /2\. Gematsu/);
+  assert.match(text, /Status: ⚠️ empty/);
 });
