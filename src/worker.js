@@ -982,6 +982,14 @@ async function handleSkipDraft(env, userChatId, callbackQueryId, draftId) {
   await sendTelegramMessage(env, userChatId, 'Draft skipped');
 }
 
+export {
+  deduplicateNewsItems,
+  formatImageDebugList,
+  isSupportedImageUrl,
+  normalizeNewsLink,
+  parsePublishedAt
+};
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
