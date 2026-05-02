@@ -14,6 +14,7 @@ const MOCK_NEWS_ERROR_TEXT = 'Failed to send mock news ❌';
 const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
 const AI_TEST_COMMAND = '/ai_test';
+const DEBUG_IMAGES_COMMAND = '/debug_images';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
@@ -47,6 +48,7 @@ const NEWS_SOURCES = [
 const MAX_FEED_ITEMS_TO_SCAN = 20;
 const MAX_NEWS_ITEMS_TO_SHOW = 5;
 const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 20;
+const MAX_DEBUG_IMAGES_ITEMS_TO_SCAN = 10;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -318,6 +320,22 @@ function deduplicateNewsItems(items, maxItems = MAX_NEWS_ITEMS_TO_SHOW) {
   }
 
   return uniqueItems;
+}
+
+function formatImageDebugList(items) {
+  const lines = ['Image debug:'];
+
+  for (const [index, item] of items.entries()) {
+    lines.push(`${index + 1}. [${item.source}] ${item.title}`);
+    lines.push(`image: ${item.imageUrl ? 'yes' : 'no'}`);
+    if (item.imageUrl) {
+      lines.push(item.imageUrl);
+    }
+    lines.push(`link: ${item.link}`);
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
 }
 
 function formatFallbackNewsPost(item) {
@@ -822,14 +840,35 @@ export default {
         }
 
         if (item.imageUrl) {
-          await sendTelegramPhoto(env, userChatId, item.imageUrl, formatDraftMessage(post), {
+          const photoResult = await sendTelegramPhoto(env, userChatId, item.imageUrl, formatDraftMessage(post), {
             reply_markup: publishDraftKeyboard(draftId)
           });
+
+          // sendTelegramPhoto falls back to text-only and returns null on photo errors.
+          if (!photoResult) {
+            await sendTelegramMessage(env, userChatId, 'Image found, but Telegram rejected it. Falling back to text-only.');
+          }
         } else {
           await sendTelegramMessage(env, userChatId, formatDraftMessage(post), {
             reply_markup: publishDraftKeyboard(draftId)
           });
         }
+      }
+
+      if (messageText === DEBUG_IMAGES_COMMAND && userChatId && chatType === 'private') {
+        const newsResult = await fetchGamingNews({ maxItems: MAX_DEBUG_IMAGES_ITEMS_TO_SCAN });
+
+        if (!newsResult.ok) {
+          await sendTelegramMessage(env, userChatId, 'Failed to fetch news ❌');
+          return jsonResponse({ ok: true });
+        }
+
+        if (newsResult.items.length === 0) {
+          await sendTelegramMessage(env, userChatId, 'No news found');
+          return jsonResponse({ ok: true });
+        }
+
+        await sendTelegramMessage(env, userChatId, formatImageDebugList(newsResult.items));
       }
 
       if (messageText === AI_TEST_COMMAND && userChatId && chatType === 'private') {
