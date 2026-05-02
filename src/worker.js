@@ -48,7 +48,8 @@ const NEWS_SOURCES = [
 const MAX_FEED_ITEMS_TO_SCAN = 20;
 const MAX_NEWS_ITEMS_TO_SHOW = 5;
 const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 20;
-const MAX_DEBUG_IMAGES_ITEMS_TO_SCAN = 10;
+const MAX_DEBUG_IMAGES_ITEMS_TO_SCAN = 30;
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -166,6 +167,20 @@ function getAttributeValue(xml, tagName, attributeName) {
   return match ? decodeXmlEntities(match[1]).trim() : '';
 }
 
+function isSupportedImageUrl(url) {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname.toLowerCase();
+    return path.endsWith('.jpg') || path.endsWith('.jpeg') || path.endsWith('.png') || path.endsWith('.webp') || path.endsWith('.gif');
+  } catch {
+    return false;
+  }
+}
+
 function getImageUrlValue(itemXml) {
   // Common RSS/Atom image patterns used by feeds.
   const rssImage =
@@ -174,13 +189,14 @@ function getImageUrlValue(itemXml) {
     getAttributeValue(itemXml, 'enclosure', 'url') ||
     getAttributeValue(itemXml, 'itunes:image', 'href');
 
-  if (rssImage) {
+  if (isSupportedImageUrl(rssImage)) {
     return rssImage;
   }
 
   const imageBlockMatch = itemXml.match(/<image\b[^>]*>([\s\S]*?)<\/image>/i);
   if (imageBlockMatch?.[1]) {
-    return getTagValue(imageBlockMatch[1], 'url');
+    const imageBlockUrl = getTagValue(imageBlockMatch[1], 'url');
+    return isSupportedImageUrl(imageBlockUrl) ? imageBlockUrl : '';
   }
 
   return '';
@@ -268,19 +284,33 @@ function deduplicateNewsItems(items, maxItems = MAX_NEWS_ITEMS_TO_SHOW) {
 }
 
 function formatImageDebugList(items) {
-  const lines = ['Image debug:'];
-
-  for (const [index, item] of items.entries()) {
-    lines.push(`${index + 1}. [${item.source}] ${item.title}`);
-    lines.push(`image: ${item.imageUrl ? 'yes' : 'no'}`);
+  return items.map((item, index) => {
+    const lines = [`${index + 1}. [${item.source}] ${item.title}`, `image: ${item.imageUrl ? 'yes' : 'no'}`];
     if (item.imageUrl) {
       lines.push(item.imageUrl);
     }
     lines.push(`link: ${item.link}`);
-    lines.push('');
+    return lines.join('\n');
+  });
+}
+
+async function sendLongTelegramMessage(env, chatId, header, blocks) {
+  let chunk = header.trim();
+
+  for (const block of blocks) {
+    const candidate = `${chunk}\n\n${block}`.trim();
+    if (candidate.length <= TELEGRAM_MAX_MESSAGE_LENGTH) {
+      chunk = candidate;
+      continue;
+    }
+
+    await sendTelegramMessage(env, chatId, chunk);
+    chunk = `${header.trim()}\n\n${block}`.trim();
   }
 
-  return lines.join('\n').trim();
+  if (chunk) {
+    await sendTelegramMessage(env, chatId, chunk);
+  }
 }
 
 function formatFallbackNewsPost(item) {
@@ -811,7 +841,8 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, userChatId, formatImageDebugList(newsResult.items));
+        const debugBlocks = formatImageDebugList(newsResult.items);
+        await sendLongTelegramMessage(env, userChatId, 'Image debug:', debugBlocks);
       }
 
       if (messageText === AI_TEST_COMMAND && userChatId && chatType === 'private') {
