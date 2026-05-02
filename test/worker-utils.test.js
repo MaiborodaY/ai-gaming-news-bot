@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   deduplicateNewsItems,
+  interleaveNewsItemsBySource,
   formatStatsMessage,
   formatSourcesDiagnosticsMessage,
   formatImageDebugList,
@@ -54,6 +55,27 @@ test('deduplicateNewsItems removes duplicate normalized titles and respects maxI
   const uniqueLimited = deduplicateNewsItems(items, 1);
   assert.equal(uniqueLimited.length, 1);
   assert.equal(uniqueLimited[0].link, 'https://a.com/1');
+});
+
+test('interleaveNewsItemsBySource interleaves source arrays fairly', () => {
+  const interleaved = interleaveNewsItemsBySource([
+    [{ id: 'A1' }, { id: 'A2' }],
+    [{ id: 'B1' }],
+    [{ id: 'C1' }, { id: 'C2' }, { id: 'C3' }]
+  ]);
+
+  assert.deepEqual(
+    interleaved.map((item) => item.id),
+    ['A1', 'B1', 'C1', 'A2', 'C2', 'C3']
+  );
+});
+
+test('interleaveNewsItemsBySource skips empty source arrays', () => {
+  const interleaved = interleaveNewsItemsBySource([[], [{ id: 'B1' }], []]);
+  assert.deepEqual(
+    interleaved.map((item) => item.id),
+    ['B1']
+  );
 });
 
 test('formatImageDebugList includes source/title/image/link and candidates info', () => {

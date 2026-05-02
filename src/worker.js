@@ -551,6 +551,21 @@ function deduplicateNewsItems(items, maxItems = MAX_NEWS_ITEMS_TO_SHOW) {
   return uniqueItems;
 }
 
+function interleaveNewsItemsBySource(sourceResults) {
+  const interleaved = [];
+  const maxLength = sourceResults.reduce((max, items) => Math.max(max, items.length), 0);
+
+  for (let index = 0; index < maxLength; index += 1) {
+    for (const items of sourceResults) {
+      if (items[index]) {
+        interleaved.push(items[index]);
+      }
+    }
+  }
+
+  return interleaved;
+}
+
 function formatImageDebugList(items) {
   return items.map((item, index) => {
     const candidates = deduplicateImageUrls(item.imageCandidates || (item.imageUrl ? [item.imageUrl] : []));
@@ -922,7 +937,7 @@ async function getBotStats(env) {
   let skippedToday = 0;
 
   const sourceCounts = new Map();
-  const knownSources = ['PlayStation Blog', 'Xbox Wire', 'Gematsu', 'Steam'];
+  const knownSources = ['PlayStation Blog', 'Xbox Wire', 'Gematsu', 'Steam', 'PC Gamer', 'IGN Games', 'Nintendo Life'];
 
   for (const keyName of draftKeys) {
     const rawDraft = await env.DRAFTS.get(keyName);
@@ -1197,6 +1212,7 @@ async function handleSkipDraft(env, userChatId, callbackQueryId, draftId) {
 
 export {
   deduplicateNewsItems,
+  interleaveNewsItemsBySource,
   formatStatsMessage,
   formatSourcesDiagnosticsMessage,
   formatImageDebugList,
@@ -1332,22 +1348,22 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        const newsResult = await fetchGamingNews({
-          maxItems: MAX_DRAFT_NEWS_ITEMS_TO_SCAN,
-          enrichImages: false
-        });
-
-        if (!newsResult.ok) {
+        let draftCandidates;
+        try {
+          const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
+          const interleavedItems = interleaveNewsItemsBySource(sourceResults);
+          draftCandidates = deduplicateNewsItems(interleavedItems, MAX_DRAFT_NEWS_ITEMS_TO_SCAN);
+        } catch {
           await sendTelegramMessage(env, userChatId, 'Failed to create draft news ❌');
           return jsonResponse({ ok: true });
         }
 
-        if (newsResult.items.length === 0) {
+        if (draftCandidates.length === 0) {
           await sendTelegramMessage(env, userChatId, 'No news found');
           return jsonResponse({ ok: true });
         }
 
-        const rawItem = await findFirstNewNewsItem(env, newsResult.items);
+        const rawItem = await findFirstNewNewsItem(env, draftCandidates);
         if (!rawItem) {
           await sendTelegramMessage(env, userChatId, 'No new news found');
           return jsonResponse({ ok: true });
