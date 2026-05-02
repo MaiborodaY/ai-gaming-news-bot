@@ -15,6 +15,7 @@ const FETCH_NEWS_COMMAND = '/fetch_news';
 const DRAFT_NEWS_COMMAND = '/draft_news';
 const AI_TEST_COMMAND = '/ai_test';
 const DEBUG_IMAGES_COMMAND = '/debug_images';
+const RESET_NEWS_INDEX_COMMAND = '/reset_news_index';
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
@@ -612,6 +613,35 @@ async function getNewsIndex(env, item) {
   return JSON.parse(rawIndex);
 }
 
+async function resetNewsIndex(env) {
+  if (!env.DRAFTS) {
+    return null;
+  }
+
+  let deletedCount = 0;
+  let cursor;
+  let isListComplete = false;
+
+  while (!isListComplete) {
+    const listResult = await env.DRAFTS.list({ prefix: NEWS_INDEX_KV_PREFIX, cursor });
+
+    for (const key of listResult.keys) {
+      // Safety guard: remove only processed-news index keys.
+      if (!key.name.startsWith(NEWS_INDEX_KV_PREFIX)) {
+        continue;
+      }
+
+      await env.DRAFTS.delete(key.name);
+      deletedCount += 1;
+    }
+
+    isListComplete = Boolean(listResult.list_complete);
+    cursor = listResult.cursor;
+  }
+
+  return deletedCount;
+}
+
 async function findFirstNewNewsItem(env, items) {
   for (const item of items) {
     const existingIndex = await getNewsIndex(env, item);
@@ -900,6 +930,22 @@ export default {
 
         const debugBlocks = formatImageDebugList(newsResult.items);
         await sendLongTelegramMessage(env, userChatId, 'Image debug:', debugBlocks);
+      }
+
+      if (messageText === RESET_NEWS_INDEX_COMMAND && userChatId && chatType === 'private') {
+        const deletedCount = await resetNewsIndex(env);
+
+        if (deletedCount === null) {
+          await sendTelegramMessage(env, userChatId, 'DRAFTS KV is not configured');
+          return jsonResponse({ ok: true });
+        }
+
+        if (deletedCount === 0) {
+          await sendTelegramMessage(env, userChatId, 'News index is already empty');
+          return jsonResponse({ ok: true });
+        }
+
+        await sendTelegramMessage(env, userChatId, `News index reset ✅ Deleted: ${deletedCount}`);
       }
 
       if (messageText === AI_TEST_COMMAND && userChatId && chatType === 'private') {
