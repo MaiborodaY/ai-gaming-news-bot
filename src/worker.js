@@ -113,19 +113,92 @@ async function sendTelegramMessage(env, chatId, text, extraPayload = {}) {
   });
 }
 
-async function sendTelegramPhoto(env, chatId, photoUrl, caption, extraPayload = {}) {
-  try {
-    return await callTelegramApi(env, 'sendPhoto', {
-      chat_id: chatId,
-      photo: photoUrl,
-      caption: caption?.slice(0, 1000),
-      ...extraPayload
-    });
-  } catch {
-    // If sending a photo fails, fallback to text-only so the draft/publication is not lost.
-    await sendTelegramMessage(env, chatId, caption, extraPayload);
-    return null;
+function summarizeTelegramError(status, responseText) {
+  const shortBody = (responseText || '').trim().replace(/\s+/g, ' ').slice(0, 700);
+  return shortBody ? `Telegram API error: ${status} ${shortBody}` : `Telegram API error: ${status}`;
+}
+
+async function sendTelegramPhotoOnly(env, chatId, photoUrl, caption, extraPayload = {}) {
+  const token = env.TELEGRAM_BOT_TOKEN;
+
+  if (!token) {
+    return { ok: false, error: 'Missing TELEGRAM_BOT_TOKEN' };
   }
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json; charset=utf-8'
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo: photoUrl,
+        caption: caption?.slice(0, 1000),
+        ...extraPayload
+      })
+    });
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      return {
+        ok: false,
+        error: summarizeTelegramError(response.status, responseText)
+      };
+    }
+
+    return {
+      ok: true,
+      result: await response.json()
+    };
+  } catch {
+    return { ok: false, error: 'Telegram API error: network or runtime error' };
+  }
+}
+
+function deduplicateImageUrls(imageUrls = []) {
+  const seen = new Set();
+  const uniqueUrls = [];
+
+  for (const imageUrl of imageUrls) {
+    if (!isSupportedImageUrl(imageUrl)) {
+      continue;
+    }
+
+    const normalized = imageUrl.trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    seen.add(normalized);
+    uniqueUrls.push(normalized);
+  }
+
+  return uniqueUrls;
+}
+
+async function sendTelegramPhotoWithFallbackCandidates(env, chatId, imageUrls, caption, extraPayload = {}) {
+  const uniqueCandidates = deduplicateImageUrls(imageUrls);
+
+  if (uniqueCandidates.length === 0) {
+    await sendTelegramMessage(env, chatId, caption, extraPayload);
+    return { ok: false, error: 'No valid image candidates' };
+  }
+
+  let lastError = 'Unknown sendPhoto error';
+
+  for (const imageUrl of uniqueCandidates) {
+    const sendResult = await sendTelegramPhotoOnly(env, chatId, imageUrl, caption, extraPayload);
+    if (sendResult.ok) {
+      return { ok: true, result: sendResult.result, imageUrl };
+    }
+
+    lastError = sendResult.error || lastError;
+  }
+
+  // If all image candidates fail, fallback to text-only so the draft/publication is not lost.
+  await sendTelegramMessage(env, chatId, caption, extraPayload);
+  return { ok: false, error: lastError };
 }
 
 async function answerCallbackQuery(env, callbackQueryId, text) {
@@ -201,25 +274,20 @@ function isSupportedImageUrl(url) {
   }
 }
 
-function getImageUrlValue(itemXml) {
-  // Common RSS/Atom image patterns used by feeds.
-  const rssImage =
-    getAttributeValue(itemXml, 'media:content', 'url') ||
-    getAttributeValue(itemXml, 'media:thumbnail', 'url') ||
-    getAttributeValue(itemXml, 'enclosure', 'url') ||
-    getAttributeValue(itemXml, 'itunes:image', 'href');
-
-  if (isSupportedImageUrl(rssImage)) {
-    return rssImage;
-  }
+function getImageCandidatesFromItemXml(itemXml) {
+  const candidates = [
+    getAttributeValue(itemXml, 'media:content', 'url'),
+    getAttributeValue(itemXml, 'media:thumbnail', 'url'),
+    getAttributeValue(itemXml, 'enclosure', 'url'),
+    getAttributeValue(itemXml, 'itunes:image', 'href')
+  ];
 
   const imageBlockMatch = itemXml.match(/<image\b[^>]*>([\s\S]*?)<\/image>/i);
   if (imageBlockMatch?.[1]) {
-    const imageBlockUrl = getTagValue(imageBlockMatch[1], 'url');
-    return isSupportedImageUrl(imageBlockUrl) ? imageBlockUrl : '';
+    candidates.push(getTagValue(imageBlockMatch[1], 'url'));
   }
 
-  return '';
+  return deduplicateImageUrls(candidates);
 }
 
 function getMetaContentValue(html, attributeName, attributeValue) {
@@ -242,7 +310,17 @@ function normalizeImageUrl(imageUrl, pageUrl) {
   }
 }
 
-async function fetchOpenGraphImageUrl(pageUrl) {
+function getHtmlImageMetaCandidates(html) {
+  return [
+    getMetaContentValue(html, 'property', 'og:image'),
+    getMetaContentValue(html, 'name', 'twitter:image'),
+    getMetaContentValue(html, 'name', 'twitter:image:src'),
+    getMetaContentValue(html, 'property', 'twitter:image'),
+    getMetaContentValue(html, 'itemprop', 'image')
+  ];
+}
+
+async function fetchOpenGraphImageCandidates(pageUrl) {
   try {
     const response = await fetch(pageUrl, {
       headers: {
@@ -256,25 +334,19 @@ async function fetchOpenGraphImageUrl(pageUrl) {
     }
 
     const html = await response.text();
-    const imageUrl =
-      getMetaContentValue(html, 'property', 'og:image') ||
-      getMetaContentValue(html, 'name', 'twitter:image');
-    const normalizedImageUrl = normalizeImageUrl(imageUrl, pageUrl);
-
-    return normalizedImageUrl || null;
+    const normalizedCandidates = getHtmlImageMetaCandidates(html).map((imageUrl) => normalizeImageUrl(imageUrl, pageUrl));
+    return deduplicateImageUrls(normalizedCandidates);
   } catch {
-    return null;
+    return [];
   }
 }
 
 async function enrichNewsItemImage(item) {
-  if (item.imageUrl) {
-    return item;
-  }
-
-  // Some sources do not expose images in RSS, but keep them in article og:image metadata.
-  const imageUrl = await fetchOpenGraphImageUrl(item.link);
-  return imageUrl ? { ...item, imageUrl } : item;
+  // Some sources do not expose images in RSS, but keep them in article metadata.
+  const openGraphCandidates = await fetchOpenGraphImageCandidates(item.link);
+  const allCandidates = deduplicateImageUrls([...(item.imageCandidates || []), ...openGraphCandidates]);
+  const imageUrl = allCandidates[0] || null;
+  return { ...item, imageUrl, imageCandidates: allCandidates };
 }
 
 function normalizeNewsTitle(title) {
@@ -325,13 +397,14 @@ function parseFeedItems(xml, sourceName) {
       const link = getLinkValue(itemXml);
       const rawPublishedAt = getFirstTagValue(itemXml, ['pubDate', 'published', 'updated', 'dc:date']);
       const publishedAt = parsePublishedAt(rawPublishedAt);
-      const imageUrl = getImageUrlValue(itemXml);
+      const imageCandidates = getImageCandidatesFromItemXml(itemXml);
+      const imageUrl = imageCandidates[0] || null;
 
       if (!title || !link) {
         return null;
       }
 
-      return { source: sourceName, title, link, publishedAt, imageUrl: imageUrl || null };
+      return { source: sourceName, title, link, publishedAt, imageUrl, imageCandidates };
     })
     .filter(Boolean)
     .filter(isRecentNewsItem);
@@ -360,9 +433,19 @@ function deduplicateNewsItems(items, maxItems = MAX_NEWS_ITEMS_TO_SHOW) {
 
 function formatImageDebugList(items) {
   return items.map((item, index) => {
-    const lines = [`${index + 1}. [${item.source}] ${item.title}`, `image: ${item.imageUrl ? 'yes' : 'no'}`];
-    if (item.imageUrl) {
-      lines.push(item.imageUrl);
+    const candidates = deduplicateImageUrls(item.imageCandidates || (item.imageUrl ? [item.imageUrl] : []));
+    const lines = [
+      `${index + 1}. [${item.source}] ${item.title}`,
+      `image: ${item.imageUrl ? 'yes' : 'no'}`,
+      `primary: ${item.imageUrl || 'n/a'}`,
+      `candidates: ${candidates.length}`
+    ];
+
+    if (candidates[0]) {
+      lines.push(`candidate 1: ${candidates[0]}`);
+    }
+    if (candidates[1]) {
+      lines.push(`candidate 2: ${candidates[1]}`);
     }
     lines.push(`link: ${item.link}`);
     return lines.join('\n');
@@ -738,8 +821,9 @@ async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
     return;
   }
 
-  if (draft.item?.imageUrl) {
-    await sendTelegramPhoto(env, env.CHANNEL_ID, draft.item.imageUrl, draft.post);
+  const publishImageCandidates = deduplicateImageUrls(draft.item?.imageCandidates || (draft.item?.imageUrl ? [draft.item.imageUrl] : []));
+  if (publishImageCandidates.length > 0) {
+    await sendTelegramPhotoWithFallbackCandidates(env, env.CHANNEL_ID, publishImageCandidates, draft.post);
   } else {
     await sendTelegramMessage(env, env.CHANNEL_ID, draft.post);
   }
@@ -922,14 +1006,24 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        if (item.imageUrl) {
-          const photoResult = await sendTelegramPhoto(env, userChatId, item.imageUrl, formatDraftMessage(post), {
-            reply_markup: publishDraftKeyboard(draftId)
-          });
+        const draftImageCandidates = deduplicateImageUrls(item.imageCandidates || (item.imageUrl ? [item.imageUrl] : []));
+        if (draftImageCandidates.length > 0) {
+          const photoResult = await sendTelegramPhotoWithFallbackCandidates(
+            env,
+            userChatId,
+            draftImageCandidates,
+            formatDraftMessage(post),
+            {
+              reply_markup: publishDraftKeyboard(draftId)
+            }
+          );
 
-          // sendTelegramPhoto falls back to text-only and returns null on photo errors.
-          if (!photoResult) {
-            await sendTelegramMessage(env, userChatId, 'Image found, but Telegram rejected it. Falling back to text-only.');
+          if (!photoResult.ok) {
+            await sendTelegramMessage(
+              env,
+              userChatId,
+              `Image found, but Telegram rejected it. Falling back to text-only.\nReason: ${(photoResult.error || 'Unknown error').slice(0, 900)}`
+            );
           }
         } else {
           await sendTelegramMessage(env, userChatId, formatDraftMessage(post), {
