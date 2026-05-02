@@ -90,6 +90,21 @@ async function sendTelegramMessage(env, chatId, text, extraPayload = {}) {
   });
 }
 
+async function sendTelegramPhoto(env, chatId, photoUrl, caption, extraPayload = {}) {
+  try {
+    return await callTelegramApi(env, 'sendPhoto', {
+      chat_id: chatId,
+      photo: photoUrl,
+      caption: caption?.slice(0, 1000),
+      ...extraPayload
+    });
+  } catch {
+    // If sending a photo fails, fallback to text-only so the draft/publication is not lost.
+    await sendTelegramMessage(env, chatId, caption, extraPayload);
+    return null;
+  }
+}
+
 async function answerCallbackQuery(env, callbackQueryId, text) {
   return callTelegramApi(env, 'answerCallbackQuery', {
     callback_query_id: callbackQueryId,
@@ -144,6 +159,31 @@ function getLinkValue(xml) {
   return hrefMatch?.[1] ? decodeXmlEntities(hrefMatch[1]).trim() : '';
 }
 
+function getAttributeValue(xml, tagName, attributeName) {
+  const match = xml.match(new RegExp(`<${tagName}[^>]*\\b${attributeName}=["']([^"']+)["'][^>]*>`, 'i'));
+  return match ? decodeXmlEntities(match[1]).trim() : '';
+}
+
+function getImageUrlValue(itemXml) {
+  // Common RSS/Atom image patterns used by feeds.
+  const rssImage =
+    getAttributeValue(itemXml, 'media:content', 'url') ||
+    getAttributeValue(itemXml, 'media:thumbnail', 'url') ||
+    getAttributeValue(itemXml, 'enclosure', 'url') ||
+    getAttributeValue(itemXml, 'itunes:image', 'href');
+
+  if (rssImage) {
+    return rssImage;
+  }
+
+  const imageBlockMatch = itemXml.match(/<image\b[^>]*>([\s\S]*?)<\/image>/i);
+  if (imageBlockMatch?.[1]) {
+    return getTagValue(imageBlockMatch[1], 'url');
+  }
+
+  return '';
+}
+
 function normalizeNewsTitle(title) {
   return title.toLowerCase().replace(/\s+/g, ' ').trim();
 }
@@ -192,12 +232,13 @@ function parseFeedItems(xml, sourceName) {
       const link = getLinkValue(itemXml);
       const rawPublishedAt = getFirstTagValue(itemXml, ['pubDate', 'published', 'updated', 'dc:date']);
       const publishedAt = parsePublishedAt(rawPublishedAt);
+      const imageUrl = getImageUrlValue(itemXml);
 
       if (!title || !link) {
         return null;
       }
 
-      return { source: sourceName, title, link, publishedAt };
+      return { source: sourceName, title, link, publishedAt, imageUrl: imageUrl || null };
     })
     .filter(Boolean)
     .filter(isRecentNewsItem);
@@ -431,6 +472,7 @@ async function saveNewsIndexRecord(env, draft) {
     title: draft.item.title,
     link: draft.item.link,
     newsPublishedAt: draft.item.publishedAt ?? null,
+    imageUrl: draft.item.imageUrl ?? null,
     createdAt: draft.createdAt,
     publishedAt: draft.publishedAt ?? null,
     skippedAt: draft.skippedAt ?? null
@@ -542,7 +584,11 @@ async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
     return;
   }
 
-  await sendTelegramMessage(env, env.CHANNEL_ID, draft.post);
+  if (draft.item?.imageUrl) {
+    await sendTelegramPhoto(env, env.CHANNEL_ID, draft.item.imageUrl, draft.post);
+  } else {
+    await sendTelegramMessage(env, env.CHANNEL_ID, draft.post);
+  }
 
   const publishedDraft = {
     ...draft,
@@ -718,9 +764,15 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        await sendTelegramMessage(env, userChatId, formatDraftMessage(post), {
-          reply_markup: publishDraftKeyboard(draftId)
-        });
+        if (item.imageUrl) {
+          await sendTelegramPhoto(env, userChatId, item.imageUrl, formatDraftMessage(post), {
+            reply_markup: publishDraftKeyboard(draftId)
+          });
+        } else {
+          await sendTelegramMessage(env, userChatId, formatDraftMessage(post), {
+            reply_markup: publishDraftKeyboard(draftId)
+          });
+        }
       }
 
       if (messageText === AI_TEST_COMMAND && userChatId && chatType === 'private') {
