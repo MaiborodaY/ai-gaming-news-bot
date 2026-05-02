@@ -19,22 +19,24 @@ const RESET_NEWS_INDEX_COMMAND = '/reset_news_index';
 const ADMIN_COMMAND = '/admin';
 const STATS_COMMAND = '/stats';
 const SOURCES_COMMAND = '/sources';
+const AUTO_POST_TEST_COMMAND = '/auto_post_test';
 const ADMIN_HELP_TEXT = `BroNews admin commands:
 
-/draft_news — create AI draft from latest unprocessed news
-/fetch_news — show latest fetched RSS news
-/debug_images — debug image detection for latest news
-/reset_news_index — reset processed news index for testing
-/stats — show bot draft and source stats
-/sources — show RSS source diagnostics
-/ai_test — check OpenAI API connection
-/test_channel — send test message to channel
-/mock_news — send mock news post to channel
-/start — check that bot is alive
+/draft_news - create AI draft from latest unprocessed news
+/fetch_news - show latest fetched RSS news
+/debug_images - debug image detection for latest news
+/reset_news_index - reset processed news index for testing
+/stats - show bot draft and source stats
+/sources - show RSS source diagnostics
+/auto_post_test - run one automatic post cycle now
+/ai_test - check OpenAI API connection
+/test_channel - send test message to channel
+/mock_news - send mock news post to channel
+/start - check that bot is alive
 
 Draft buttons:
-✅ Publish — publish draft to channel
-❌ Skip — mark draft as skipped
+Publish - publish draft to channel
+Skip - mark draft as skipped
 
 Notes:
 - /reset_news_index deletes only processed news index keys, not draft records.
@@ -1011,6 +1013,18 @@ async function findFirstNewNewsItem(env, items) {
   return null;
 }
 
+async function findNextUnprocessedNewsItem(env) {
+  const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
+  const interleavedItems = interleaveNewsItemsBySource(sourceResults);
+  const candidates = deduplicateNewsItems(interleavedItems, MAX_DRAFT_NEWS_ITEMS_TO_SCAN);
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return findFirstNewNewsItem(env, candidates);
+}
+
 async function fetchNewsSource(source) {
   try {
     const response = await fetch(source.url, {
@@ -1118,6 +1132,67 @@ async function fetchGamingNews({ maxItems = MAX_NEWS_ITEMS_TO_SHOW, enrichImages
     return { ok: true, items: itemsWithImages };
   } catch {
     return { ok: false, items: [] };
+  }
+}
+
+async function publishNewsItem(env, item) {
+  if (!env.CHANNEL_ID) {
+    return { ok: false, reason: 'CHANNEL_ID is not configured' };
+  }
+
+  if (!env.DRAFTS) {
+    return { ok: false, reason: 'DRAFTS KV is not configured' };
+  }
+
+  const enrichedItem = await enrichNewsItemImage(item);
+  const post = await createNewsPost(env, enrichedItem);
+  const draftId = await saveDraft(env, enrichedItem, post);
+
+  if (!draftId) {
+    return { ok: false, reason: 'Failed to save draft' };
+  }
+
+  const imageCandidates = deduplicateImageUrls(enrichedItem.imageCandidates || (enrichedItem.imageUrl ? [enrichedItem.imageUrl] : []));
+  if (imageCandidates.length > 0) {
+    await sendTelegramPhotoWithFallbackCandidates(env, env.CHANNEL_ID, imageCandidates, post);
+  } else {
+    await sendTelegramMessage(env, env.CHANNEL_ID, post);
+  }
+
+  const savedDraft = await getDraft(env, draftId);
+  if (!savedDraft?.post) {
+    return { ok: false, reason: 'Draft was not found after save' };
+  }
+
+  const publishedDraft = {
+    ...savedDraft,
+    status: DRAFT_STATUS_PUBLISHED,
+    publishedAt: new Date().toISOString()
+  };
+  await saveDraftRecord(env, publishedDraft);
+  await saveNewsIndexRecord(env, publishedDraft);
+
+  return { ok: true, source: enrichedItem.source, title: enrichedItem.title };
+}
+
+async function runAutoPost(env) {
+  try {
+    if (!env.CHANNEL_ID) {
+      return { ok: false, reason: 'CHANNEL_ID is not configured' };
+    }
+
+    if (!env.DRAFTS) {
+      return { ok: false, reason: 'DRAFTS KV is not configured' };
+    }
+
+    const item = await findNextUnprocessedNewsItem(env);
+    if (!item) {
+      return { ok: true, reason: 'no_new_news' };
+    }
+
+    return publishNewsItem(env, item);
+  } catch {
+    return { ok: false, reason: 'Auto post runtime error' };
   }
 }
 
@@ -1298,6 +1373,23 @@ export default {
         await sendLongTelegramMessage(env, userChatId, '🗞 BroNews sources', sourceBlocks);
       }
 
+
+      if (messageText === AUTO_POST_TEST_COMMAND && userChatId && chatType === 'private') {
+        const autoPostResult = await runAutoPost(env);
+
+        if (autoPostResult.ok && autoPostResult.reason === 'no_new_news') {
+          await sendTelegramMessage(env, userChatId, 'Auto post test: no new news found');
+          return jsonResponse({ ok: true });
+        }
+
+        if (autoPostResult.ok) {
+          await sendTelegramMessage(env, userChatId, `Auto post test ✅ Published: ${autoPostResult.source} - ${autoPostResult.title}`);
+          return jsonResponse({ ok: true });
+        }
+
+        await sendTelegramMessage(env, userChatId, `Auto post test failed ❌ ${autoPostResult.reason || 'Unknown error'}`);
+        return jsonResponse({ ok: true });
+      }
       if (messageText === TEST_CHANNEL_COMMAND && userChatId && chatType === 'private') {
         if (!env.CHANNEL_ID) {
           await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
@@ -1348,22 +1440,13 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        let draftCandidates;
+        let rawItem;
         try {
-          const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
-          const interleavedItems = interleaveNewsItemsBySource(sourceResults);
-          draftCandidates = deduplicateNewsItems(interleavedItems, MAX_DRAFT_NEWS_ITEMS_TO_SCAN);
+          rawItem = await findNextUnprocessedNewsItem(env);
         } catch {
           await sendTelegramMessage(env, userChatId, 'Failed to create draft news ❌');
           return jsonResponse({ ok: true });
         }
-
-        if (draftCandidates.length === 0) {
-          await sendTelegramMessage(env, userChatId, 'No news found');
-          return jsonResponse({ ok: true });
-        }
-
-        const rawItem = await findFirstNewNewsItem(env, draftCandidates);
         if (!rawItem) {
           await sendTelegramMessage(env, userChatId, 'No new news found');
           return jsonResponse({ ok: true });
@@ -1446,5 +1529,9 @@ export default {
     }
 
     return new Response('AI Gaming News Bot is running');
+  },
+
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runAutoPost(env));
   }
 };
