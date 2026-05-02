@@ -184,6 +184,61 @@ function getImageUrlValue(itemXml) {
   return '';
 }
 
+function getMetaContentValue(html, attributeName, attributeValue) {
+  const metaMatch = html.match(
+    new RegExp(`<meta\\b(?=[^>]*\\b${attributeName}=["']${attributeValue}["'])(?=[^>]*\\bcontent=["']([^"']+)["'])[^>]*>`, 'i')
+  );
+
+  return metaMatch?.[1] ? decodeXmlEntities(metaMatch[1]).trim() : '';
+}
+
+function normalizeImageUrl(imageUrl, pageUrl) {
+  if (!imageUrl) {
+    return '';
+  }
+
+  try {
+    return new URL(imageUrl, pageUrl).toString();
+  } catch {
+    return '';
+  }
+}
+
+async function fetchOpenGraphImageUrl(pageUrl) {
+  try {
+    const response = await fetch(pageUrl, {
+      headers: {
+        'user-agent': 'BroNewsBot/0.1 (+https://t.me/BroNews_bot)',
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const html = await response.text();
+    const imageUrl =
+      getMetaContentValue(html, 'property', 'og:image') ||
+      getMetaContentValue(html, 'name', 'twitter:image');
+    const normalizedImageUrl = normalizeImageUrl(imageUrl, pageUrl);
+
+    return normalizedImageUrl || null;
+  } catch {
+    return null;
+  }
+}
+
+async function enrichNewsItemImage(item) {
+  if (item.imageUrl) {
+    return item;
+  }
+
+  // Some sources do not expose images in RSS, but keep them in article og:image metadata.
+  const imageUrl = await fetchOpenGraphImageUrl(item.link);
+  return imageUrl ? { ...item, imageUrl } : item;
+}
+
 function normalizeNewsTitle(title) {
   return title.toLowerCase().replace(/\s+/g, ' ').trim();
 }
@@ -544,9 +599,11 @@ async function fetchGamingNews({ maxItems = MAX_NEWS_ITEMS_TO_SHOW } = {}) {
   try {
     const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
     const allItems = sourceResults.flat();
+    const uniqueItems = deduplicateNewsItems(allItems, maxItems);
+    const itemsWithImages = await Promise.all(uniqueItems.map(enrichNewsItemImage));
 
     // /fetch_news shows a short list, but /draft_news scans deeper to skip already processed links.
-    return { ok: true, items: deduplicateNewsItems(allItems, maxItems) };
+    return { ok: true, items: itemsWithImages };
   } catch {
     return { ok: false, items: [] };
   }
