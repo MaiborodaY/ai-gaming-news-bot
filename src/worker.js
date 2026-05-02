@@ -17,12 +17,14 @@ const AI_TEST_COMMAND = '/ai_test';
 const DEBUG_IMAGES_COMMAND = '/debug_images';
 const RESET_NEWS_INDEX_COMMAND = '/reset_news_index';
 const ADMIN_COMMAND = '/admin';
+const STATS_COMMAND = '/stats';
 const ADMIN_HELP_TEXT = `BroNews admin commands:
 
 /draft_news — create AI draft from latest unprocessed news
 /fetch_news — show latest fetched RSS news
 /debug_images — debug image detection for latest news
 /reset_news_index — reset processed news index for testing
+/stats — show bot draft and source stats
 /ai_test — check OpenAI API connection
 /test_channel — send test message to channel
 /mock_news — send mock news post to channel
@@ -848,6 +850,127 @@ async function resetNewsIndex(env) {
   return deletedCount;
 }
 
+async function listKvKeysByPrefix(kv, prefix) {
+  const keys = [];
+  let cursor;
+  let isListComplete = false;
+
+  while (!isListComplete) {
+    const listResult = await kv.list({ prefix, cursor });
+    for (const key of listResult.keys) {
+      if (key.name.startsWith(prefix)) {
+        keys.push(key.name);
+      }
+    }
+
+    isListComplete = Boolean(listResult.list_complete);
+    cursor = listResult.cursor;
+  }
+
+  return keys;
+}
+
+function formatStatsMessage(stats) {
+  const sourceLines = stats.sourceLines.length > 0 ? stats.sourceLines.join('\n') : 'No data';
+
+  return `📊 BroNews stats
+
+Total:
+Drafts: ${stats.draftCount}
+Published: ${stats.publishedCount}
+Skipped: ${stats.skippedCount}
+All drafts: ${stats.totalDrafts}
+Processed news index: ${stats.processedNewsIndexCount}
+
+Today UTC:
+Created: ${stats.createdToday}
+Published: ${stats.publishedToday}
+Skipped: ${stats.skippedToday}
+
+Sources:
+${sourceLines}`;
+}
+
+async function getBotStats(env) {
+  if (!env.DRAFTS) {
+    return null;
+  }
+
+  const draftKeys = await listKvKeysByPrefix(env.DRAFTS, DRAFT_KV_PREFIX);
+  const processedNewsIndexKeys = await listKvKeysByPrefix(env.DRAFTS, NEWS_INDEX_KV_PREFIX);
+  const todayUtc = new Date().toISOString().slice(0, 10);
+
+  let draftCount = 0;
+  let publishedCount = 0;
+  let skippedCount = 0;
+  let createdToday = 0;
+  let publishedToday = 0;
+  let skippedToday = 0;
+
+  const sourceCounts = new Map();
+  const knownSources = ['PlayStation Blog', 'Xbox Wire', 'Gematsu', 'Steam'];
+
+  for (const keyName of draftKeys) {
+    const rawDraft = await env.DRAFTS.get(keyName);
+    if (!rawDraft) {
+      continue;
+    }
+
+    let draft;
+    try {
+      draft = JSON.parse(rawDraft);
+    } catch {
+      continue;
+    }
+
+    const status = draft?.status;
+    if (status === DRAFT_STATUS_DRAFT) {
+      draftCount += 1;
+    } else if (status === DRAFT_STATUS_PUBLISHED) {
+      publishedCount += 1;
+    } else if (status === DRAFT_STATUS_SKIPPED) {
+      skippedCount += 1;
+    }
+
+    if (typeof draft?.createdAt === 'string' && draft.createdAt.startsWith(todayUtc)) {
+      createdToday += 1;
+    }
+    if (typeof draft?.publishedAt === 'string' && draft.publishedAt.startsWith(todayUtc)) {
+      publishedToday += 1;
+    }
+    if (typeof draft?.skippedAt === 'string' && draft.skippedAt.startsWith(todayUtc)) {
+      skippedToday += 1;
+    }
+
+    const source = draft?.item?.source || 'Unknown';
+    sourceCounts.set(source, (sourceCounts.get(source) || 0) + 1);
+  }
+
+  const sourceLines = [];
+  for (const source of knownSources) {
+    sourceLines.push(`${source}: ${sourceCounts.get(source) || 0}`);
+    sourceCounts.delete(source);
+  }
+  sourceLines.push(`Unknown: ${sourceCounts.get('Unknown') || 0}`);
+  sourceCounts.delete('Unknown');
+
+  for (const [source, count] of [...sourceCounts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    sourceLines.push(`${source}: ${count}`);
+  }
+
+  return {
+    draftCount,
+    publishedCount,
+    skippedCount,
+    totalDrafts: draftCount + publishedCount + skippedCount,
+    processedNewsIndexCount: processedNewsIndexKeys.length,
+    createdToday,
+    publishedToday,
+    skippedToday,
+    sourceLines
+  };
+}
+
 async function findFirstNewNewsItem(env, items) {
   for (const item of items) {
     const existingIndex = await getNewsIndex(env, item);
@@ -984,6 +1107,7 @@ async function handleSkipDraft(env, userChatId, callbackQueryId, draftId) {
 
 export {
   deduplicateNewsItems,
+  formatStatsMessage,
   formatImageDebugList,
   isSupportedImageUrl,
   normalizeNewsLink,
@@ -1040,6 +1164,16 @@ export default {
 
       if (messageText === ADMIN_COMMAND && userChatId && chatType === 'private') {
         await sendTelegramMessage(env, userChatId, ADMIN_HELP_TEXT);
+      }
+
+      if (messageText === STATS_COMMAND && userChatId && chatType === 'private') {
+        const stats = await getBotStats(env);
+        if (!stats) {
+          await sendTelegramMessage(env, userChatId, 'DRAFTS KV is not configured');
+          return jsonResponse({ ok: true });
+        }
+
+        await sendTelegramMessage(env, userChatId, formatStatsMessage(stats));
       }
 
       if (messageText === TEST_CHANNEL_COMMAND && userChatId && chatType === 'private') {

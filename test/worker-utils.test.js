@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   deduplicateNewsItems,
+  formatStatsMessage,
   formatImageDebugList,
   isSupportedImageUrl,
   normalizeNewsLink,
@@ -83,4 +84,25 @@ test('formatImageDebugList includes source/title/image/link and candidates info'
   assert.match(blocks[1], /2\. \[Gematsu\] News B/);
   assert.match(blocks[1], /image: no/);
   assert.match(blocks[1], /link: https:\/\/site\.com\/post-b/);
+});
+
+test('formatStatsMessage renders compact stats output', () => {
+  const text = formatStatsMessage({
+    draftCount: 3,
+    publishedCount: 12,
+    skippedCount: 5,
+    totalDrafts: 20,
+    processedNewsIndexCount: 27,
+    createdToday: 8,
+    publishedToday: 4,
+    skippedToday: 2,
+    sourceLines: ['PlayStation Blog: 7', 'Xbox Wire: 6', 'Gematsu: 5', 'Steam: 2', 'Unknown: 0']
+  });
+
+  assert.match(text, /📊 BroNews stats/);
+  assert.match(text, /Drafts: 3/);
+  assert.match(text, /Published: 12/);
+  assert.match(text, /Processed news index: 27/);
+  assert.match(text, /Today UTC:/);
+  assert.match(text, /PlayStation Blog: 7/);
 });
