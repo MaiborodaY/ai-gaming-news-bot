@@ -67,6 +67,18 @@ const NEWS_SOURCES = [
   {
     name: 'Gematsu',
     url: 'https://www.gematsu.com/feed'
+  },
+  {
+    name: 'PC Gamer',
+    url: 'https://www.pcgamer.com/rss/'
+  },
+  {
+    name: 'IGN Games',
+    url: 'https://feeds.ign.com/ign/games-all'
+  },
+  {
+    name: 'Nintendo Life',
+    url: 'https://www.nintendolife.com/feeds/latest'
   }
 ];
 const MAX_FEED_ITEMS_TO_SCAN = 20;
