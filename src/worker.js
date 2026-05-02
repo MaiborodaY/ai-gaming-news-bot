@@ -70,6 +70,7 @@ const MAX_NEWS_ITEMS_TO_SHOW = 5;
 const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 20;
 const MAX_DEBUG_IMAGES_ITEMS_TO_SCAN = 30;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
+const MAX_TELEGRAM_UPLOAD_IMAGE_BYTES = 10 * 1024 * 1024;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -156,6 +157,104 @@ async function sendTelegramPhotoOnly(env, chatId, photoUrl, caption, extraPayloa
   }
 }
 
+async function fetchImageBlob(imageUrl) {
+  try {
+    const response = await fetch(imageUrl, {
+      headers: {
+        'user-agent': 'BroNewsBot/0.1 (+https://t.me/BroNews_bot)',
+        accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+      }
+    });
+
+    if (!response.ok) {
+      return { ok: false, error: `Image fetch failed: HTTP ${response.status}` };
+    }
+
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    if (!contentType.startsWith('image/')) {
+      return { ok: false, error: `Image fetch rejected content-type: ${contentType || 'unknown'}` };
+    }
+
+    const contentLength = Number(response.headers.get('content-length') || 0);
+    if (contentLength > MAX_TELEGRAM_UPLOAD_IMAGE_BYTES) {
+      return { ok: false, error: `Image fetch failed: file too large (${contentLength} bytes)` };
+    }
+
+    const blob = await response.blob();
+    if (blob.size > MAX_TELEGRAM_UPLOAD_IMAGE_BYTES) {
+      return { ok: false, error: `Image fetch failed: file too large (${blob.size} bytes)` };
+    }
+
+    return { ok: true, blob, contentType };
+  } catch {
+    return { ok: false, error: 'Image fetch failed: network or runtime error' };
+  }
+}
+
+function getImageFilename(imageUrl, contentType = '') {
+  try {
+    const parsed = new URL(imageUrl);
+    const rawName = parsed.pathname.split('/').pop() || '';
+    if (rawName && /\.[a-z0-9]+$/i.test(rawName)) {
+      return rawName;
+    }
+  } catch {
+    // ignore URL parsing errors and use content-type fallback below
+  }
+
+  if (contentType.includes('image/png')) {
+    return 'image.png';
+  }
+  if (contentType.includes('image/webp')) {
+    return 'image.webp';
+  }
+  if (contentType.includes('image/gif')) {
+    return 'image.gif';
+  }
+  if (contentType.includes('image/jpeg') || contentType.includes('image/jpg')) {
+    return 'image.jpg';
+  }
+
+  return 'image.jpg';
+}
+
+async function sendTelegramPhotoUpload(env, chatId, imageUrl, caption, extraPayload = {}) {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    return { ok: false, error: 'Missing TELEGRAM_BOT_TOKEN' };
+  }
+
+  const imageResult = await fetchImageBlob(imageUrl);
+  if (!imageResult.ok) {
+    return imageResult;
+  }
+
+  const formData = new FormData();
+  formData.append('chat_id', String(chatId));
+  formData.append('caption', (caption || '').slice(0, 1000));
+  formData.append('photo', imageResult.blob, getImageFilename(imageUrl, imageResult.contentType));
+
+  if (extraPayload.reply_markup) {
+    formData.append('reply_markup', JSON.stringify(extraPayload.reply_markup));
+  }
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      const responseText = await response.text();
+      return { ok: false, error: summarizeTelegramError(response.status, responseText) };
+    }
+
+    return { ok: true, result: await response.json() };
+  } catch {
+    return { ok: false, error: 'Telegram upload error: network or runtime error' };
+  }
+}
+
 function deduplicateImageUrls(imageUrls = []) {
   const seen = new Set();
   const uniqueUrls = [];
@@ -188,12 +287,17 @@ async function sendTelegramPhotoWithFallbackCandidates(env, chatId, imageUrls, c
   let lastError = 'Unknown sendPhoto error';
 
   for (const imageUrl of uniqueCandidates) {
-    const sendResult = await sendTelegramPhotoOnly(env, chatId, imageUrl, caption, extraPayload);
-    if (sendResult.ok) {
-      return { ok: true, result: sendResult.result, imageUrl };
+    const urlSendResult = await sendTelegramPhotoOnly(env, chatId, imageUrl, caption, extraPayload);
+    if (urlSendResult.ok) {
+      return { ok: true, result: urlSendResult.result, imageUrl };
     }
 
-    lastError = sendResult.error || lastError;
+    const uploadSendResult = await sendTelegramPhotoUpload(env, chatId, imageUrl, caption, extraPayload);
+    if (uploadSendResult.ok) {
+      return { ok: true, result: uploadSendResult.result, imageUrl };
+    }
+
+    lastError = uploadSendResult.error || urlSendResult.error || lastError;
   }
 
   // If all image candidates fail, fallback to text-only so the draft/publication is not lost.
