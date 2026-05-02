@@ -16,6 +16,25 @@ const DRAFT_NEWS_COMMAND = '/draft_news';
 const AI_TEST_COMMAND = '/ai_test';
 const DEBUG_IMAGES_COMMAND = '/debug_images';
 const RESET_NEWS_INDEX_COMMAND = '/reset_news_index';
+const ADMIN_COMMAND = '/admin';
+const ADMIN_HELP_TEXT = `BroNews admin commands:
+
+/draft_news — create AI draft from latest unprocessed news
+/fetch_news — show latest fetched RSS news
+/debug_images — debug image detection for latest news
+/reset_news_index — reset processed news index for testing
+/ai_test — check OpenAI API connection
+/test_channel — send test message to channel
+/mock_news — send mock news post to channel
+/start — check that bot is alive
+
+Draft buttons:
+✅ Publish — publish draft to channel
+❌ Skip — mark draft as skipped
+
+Notes:
+- /reset_news_index deletes only processed news index keys, not draft records.
+- /debug_images is for diagnostics only.`;
 const PUBLISH_DRAFT_CALLBACK_PREFIX = 'publish_draft:';
 const SKIP_DRAFT_CALLBACK_PREFIX = 'skip_draft:';
 const DRAFT_KV_PREFIX = 'draft:';
@@ -821,6 +840,10 @@ export default {
 
       if (messageText === START_COMMAND && userChatId) {
         await sendTelegramMessage(env, userChatId, START_REPLY);
+      }
+
+      if (messageText === ADMIN_COMMAND && userChatId && chatType === 'private') {
+        await sendTelegramMessage(env, userChatId, ADMIN_HELP_TEXT);
       }
 
       if (messageText === TEST_CHANNEL_COMMAND && userChatId && chatType === 'private') {
