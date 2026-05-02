@@ -83,7 +83,7 @@ const NEWS_SOURCES = [
 ];
 const MAX_FEED_ITEMS_TO_SCAN = 20;
 const MAX_NEWS_ITEMS_TO_SHOW = 5;
-const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 20;
+const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 100;
 const MAX_DEBUG_IMAGES_ITEMS_TO_SCAN = 30;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 const MAX_TELEGRAM_UPLOAD_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -1088,14 +1088,18 @@ function formatSourcesDiagnosticsMessage(results) {
   return lines.join('\n').trim();
 }
 
-async function fetchGamingNews({ maxItems = MAX_NEWS_ITEMS_TO_SHOW } = {}) {
+async function fetchGamingNews({ maxItems = MAX_NEWS_ITEMS_TO_SHOW, enrichImages = true } = {}) {
   try {
     const sourceResults = await Promise.all(NEWS_SOURCES.map(fetchNewsSource));
     const allItems = sourceResults.flat();
     const uniqueItems = deduplicateNewsItems(allItems, maxItems);
-    const itemsWithImages = await Promise.all(uniqueItems.map(enrichNewsItemImage));
 
     // /fetch_news shows a short list, but /draft_news scans deeper to skip already processed links.
+    if (!enrichImages) {
+      return { ok: true, items: uniqueItems };
+    }
+
+    const itemsWithImages = await Promise.all(uniqueItems.map(enrichNewsItemImage));
     return { ok: true, items: itemsWithImages };
   } catch {
     return { ok: false, items: [] };
@@ -1328,7 +1332,10 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        const newsResult = await fetchGamingNews({ maxItems: MAX_DRAFT_NEWS_ITEMS_TO_SCAN });
+        const newsResult = await fetchGamingNews({
+          maxItems: MAX_DRAFT_NEWS_ITEMS_TO_SCAN,
+          enrichImages: false
+        });
 
         if (!newsResult.ok) {
           await sendTelegramMessage(env, userChatId, 'Failed to create draft news ❌');
@@ -1340,12 +1347,13 @@ export default {
           return jsonResponse({ ok: true });
         }
 
-        const item = await findFirstNewNewsItem(env, newsResult.items);
-        if (!item) {
+        const rawItem = await findFirstNewNewsItem(env, newsResult.items);
+        if (!rawItem) {
           await sendTelegramMessage(env, userChatId, 'No new news found');
           return jsonResponse({ ok: true });
         }
 
+        const item = await enrichNewsItemImage(rawItem);
         const post = await createNewsPost(env, item);
         const draftId = await saveDraft(env, item, post);
 
