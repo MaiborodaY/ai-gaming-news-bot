@@ -1,3 +1,11 @@
+import {
+  FINANCE_CRON_EXPRESSION,
+  fetchMarketSnapshot,
+  formatMarketReport,
+  getMarketReportSlot,
+  marketReportKey
+} from './market.js';
+
 const START_COMMAND = '/start';
 const START_REPLY = 'BroNews bot is alive ✅';
 const TEST_CHANNEL_COMMAND = '/test_channel';
@@ -89,6 +97,9 @@ const MAX_DRAFT_NEWS_ITEMS_TO_SCAN = 100;
 const MAX_DEBUG_IMAGES_ITEMS_TO_SCAN = 30;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 const MAX_TELEGRAM_UPLOAD_IMAGE_BYTES = 10 * 1024 * 1024;
+const GAMING_CRON_EXPRESSION = '0 10-18/2 * * *';
+const MARKET_LATEST_KV_KEY = 'market:latest';
+const MARKET_REPORT_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -1196,6 +1207,52 @@ async function runAutoPost(env) {
   }
 }
 
+async function runMarketReport(env, scheduledTime) {
+  try {
+    const slot = getMarketReportSlot(scheduledTime);
+    if (!slot) {
+      return { ok: true, reason: 'outside_report_hours' };
+    }
+
+    if (!env.FINANCE_CHANNEL_ID) {
+      return { ok: false, reason: 'FINANCE_CHANNEL_ID is not configured' };
+    }
+
+    if (!env.DRAFTS) {
+      return { ok: false, reason: 'DRAFTS KV is not configured' };
+    }
+
+    const reportKey = marketReportKey(slot);
+    if (await env.DRAFTS.get(reportKey)) {
+      return { ok: true, reason: 'already_published' };
+    }
+
+    const previousSnapshotRaw = await env.DRAFTS.get(MARKET_LATEST_KV_KEY);
+    let previousSnapshot = null;
+    try {
+      previousSnapshot = previousSnapshotRaw ? JSON.parse(previousSnapshotRaw) : null;
+    } catch {
+      previousSnapshot = null;
+    }
+
+    const snapshot = await fetchMarketSnapshot(env.COINGECKO_API_KEY);
+    const report = formatMarketReport(snapshot, previousSnapshot, slot);
+    await sendTelegramMessage(env, env.FINANCE_CHANNEL_ID, report);
+
+    await Promise.all([
+      env.DRAFTS.put(MARKET_LATEST_KV_KEY, JSON.stringify(snapshot)),
+      env.DRAFTS.put(reportKey, JSON.stringify({ publishedAt: new Date().toISOString() }), {
+        expirationTtl: MARKET_REPORT_TTL_SECONDS
+      })
+    ]);
+
+    return { ok: true, reason: 'published' };
+  } catch (error) {
+    console.error('Market report failed', error);
+    return { ok: false, reason: error instanceof Error ? error.message : 'Market report runtime error' };
+  }
+}
+
 async function handlePublishDraft(env, userChatId, callbackQueryId, draftId) {
   if (!env.CHANNEL_ID) {
     await answerCallbackQuery(env, callbackQueryId, 'CHANNEL_ID is not configured');
@@ -1532,6 +1589,13 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runAutoPost(env));
+    if (event.cron === GAMING_CRON_EXPRESSION) {
+      ctx.waitUntil(runAutoPost(env));
+      return;
+    }
+
+    if (event.cron === FINANCE_CRON_EXPRESSION) {
+      ctx.waitUntil(runMarketReport(env, event.scheduledTime));
+    }
   }
 };

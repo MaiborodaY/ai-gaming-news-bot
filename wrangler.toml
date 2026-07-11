@@ -4,10 +4,11 @@ compatibility_date = "2026-04-30"
 
 [vars]
 CHANNEL_ID = "@BroNewsWorld"
+FINANCE_CHANNEL_ID = "@BroProNews"
 
 [[kv_namespaces]]
 binding = "DRAFTS"
 id = "3181a3c53f9140afaaafbc1cd77a2e82"
 
 [triggers]
-crons = ["0 10-18/2 * * *"]
+crons = ["0 10-18/2 * * *", "0 9,10,19,20 * * *"]
