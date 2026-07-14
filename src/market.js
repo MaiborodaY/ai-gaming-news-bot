@@ -208,24 +208,72 @@ export function classifyMarketTrend(asset) {
   return 'neutral';
 }
 
-function getTrendText(trend) {
+function getTrendText(trend, asset) {
+  const change24h = asFiniteNumber(asset.change24h);
+  const change7d = asFiniteNumber(asset.change7d);
+
   if (trend === 'positive') {
+    if (change24h > 0 && change7d < 0) {
+      return {
+        icon: '📈',
+        outlook:
+          'За сутки цена выросла, но недельный минус ещё не отыгран. Рост может продолжиться, хотя пока выглядит неуверенно.'
+      };
+    }
+
+    if (change24h >= 3) {
+      return {
+        icon: '📈',
+        outlook:
+          'За сутки цена заметно выросла. Рост может продолжиться, но после быстрого подъёма возможна небольшая пауза.'
+      };
+    }
+
     return {
-      current: 'больше признаков роста',
-      outlook: 'скорее рост, если текущая динамика сохранится'
+      icon: '📈',
+      outlook: 'Цена постепенно растёт. Если интерес не ослабнет, движение вверх может продолжиться.'
     };
   }
 
   if (trend === 'negative') {
+    if (change24h > 0 && change7d < 0) {
+      return {
+        icon: '📉',
+        outlook:
+          'За сутки цена немного восстановилась, но недельное падение всё ещё сильное. Пока снижение остаётся более вероятным.'
+      };
+    }
+
+    if (change24h <= -3) {
+      return {
+        icon: '📉',
+        outlook: 'За сутки цена заметно снизилась. Без улучшения ситуации падение может продолжиться.'
+      };
+    }
+
     return {
-      current: 'больше признаков снижения',
-      outlook: 'скорее снижение, если текущая динамика сохранится'
+      icon: '📉',
+      outlook: 'Цена движется вниз. Пока заметных признаков роста нет, поэтому снижение остаётся более вероятным.'
+    };
+  }
+
+  if (change24h > 0 && change7d < 0) {
+    return {
+      icon: '↔️',
+      outlook: 'За сутки цена выросла, но за неделю всё ещё в минусе. Пока явного направления нет.'
+    };
+  }
+
+  if (change24h < 0 && change7d > 0) {
+    return {
+      icon: '↔️',
+      outlook: 'За сутки цена снизилась, но недельный результат остаётся положительным. Пока явного направления нет.'
     };
   }
 
   return {
-    current: 'явного направления пока нет',
-    outlook: 'скорее цена останется примерно на текущем уровне'
+    icon: '↔️',
+    outlook: 'Цена колеблется без явного направления. Вероятнее небольшие движения около текущего уровня.'
   };
 }
 
@@ -283,11 +331,11 @@ export function buildMarketChartUrl(snapshot) {
 export function formatMarketReport(snapshot, previousSnapshot, slot) {
   const assetEmojis = {
     'the-open-network': '💎',
-    bitcoin: '🟠',
+    bitcoin: '₿',
     spcxx: '🚀'
   };
   const assetBlocks = snapshot.assets.map((asset) => {
-    const trendText = getTrendText(classifyMarketTrend(asset));
+    const trendText = getTrendText(classifyMarketTrend(asset), asset);
     const sincePrevious = getChangeSincePrevious(asset, previousSnapshot);
     const displayName = asset.symbol === asset.name ? asset.name : `${asset.name} (${asset.symbol})`;
     const changes = [
@@ -299,16 +347,14 @@ export function formatMarketReport(snapshot, previousSnapshot, slot) {
     return [
       `${assetEmojis[asset.id] || '📌'} ${displayName} — ${formatUsd(asset.price)}`,
       changes.join(' • '),
-      `С прошлого отчёта: ${formatPercent(sincePrevious)}`,
-      `👀 Сейчас: ${trendText.current}`,
-      `🔮 Дальше: ${trendText.outlook}`
+      `С прошлого выпуска: ${formatPercent(sincePrevious)}`,
+      `${trendText.icon} Прогноз: ${trendText.outlook}`
     ].join('\n');
   });
 
   return [
     `📊 Рынок • ${slot.label} (Хорватия)`,
     ...assetBlocks,
-    'ℹ️ Данные: публичный Bybit API. SPCXx — токенизированный трекер SpaceX, не обычная акция.',
     '⚠️ Не является инвестиционной рекомендацией.'
   ].join('\n\n');
 }

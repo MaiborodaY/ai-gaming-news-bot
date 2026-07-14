@@ -126,26 +126,26 @@ test('formatMarketReport uses clear trend wording, prices and disclaimer', () =>
         symbol: 'TON',
         price: 3.5,
         change1h: 0.5,
-        change24h: 2,
-        change7d: 4
+        change24h: 2.59,
+        change7d: -2.17
       },
       {
         id: 'bitcoin',
         name: 'Bitcoin',
         symbol: 'BTC',
         price: 64120,
-        change1h: -1,
-        change24h: -2,
-        change7d: -3
+        change1h: -0.02,
+        change24h: 4.21,
+        change7d: 0.64
       },
       {
         id: 'spcxx',
         name: 'SpaceX xStock',
         symbol: 'SPCXx',
         price: 150.16,
-        change1h: null,
-        change24h: 0.1,
-        change7d: null
+        change1h: 0.11,
+        change24h: 0.91,
+        change7d: -8.78
       }
     ]
   };
@@ -162,16 +162,14 @@ test('formatMarketReport uses clear trend wording, prices and disclaimer', () =>
   assert.match(text, /11:00 \(Хорватия\)/);
   assert.match(text, /💎 TON — \$3\.50/);
   assert.match(text, /1 ч: \+0\.50%/);
-  assert.match(text, /7 дн\.: \+4\.00%/);
-  assert.match(text, /🟠 Bitcoin \(BTC\) — \$64,120\.00/);
+  assert.match(text, /7 дн\.: -2\.17%/);
+  assert.match(text, /₿ Bitcoin \(BTC\) — \$64,120\.00/);
   assert.match(text, /🚀 SpaceX xStock \(SPCXx\) — \$150\.16/);
-  assert.match(text, /С прошлого отчёта: \+2\.94%/);
-  assert.match(text, /Сейчас: больше признаков роста/);
-  assert.match(text, /Дальше: скорее снижение, если текущая динамика сохранится/);
-  assert.match(text, /Сейчас: явного направления пока нет/);
-  assert.doesNotMatch(text, /Сигнал|смешанный|импульс/);
-  assert.match(text, /публичный Bybit API/);
-  assert.match(text, /SPCXx — токенизированный трекер SpaceX/);
+  assert.match(text, /С прошлого выпуска: \+2\.94%/);
+  assert.match(text, /📈 Прогноз: За сутки цена выросла, но недельный минус ещё не отыгран/);
+  assert.match(text, /📈 Прогноз: За сутки цена заметно выросла/);
+  assert.match(text, /📉 Прогноз: За сутки цена немного восстановилась/);
+  assert.doesNotMatch(text, /Сигнал|смешанный|импульс|🔮|публичный Bybit API|токенизированный/);
   assert.match(text, /Не является инвестиционной рекомендацией/);
   assert.ok(text.length <= 1000);
 });
