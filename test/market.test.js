@@ -6,51 +6,58 @@ import {
   fetchMarketSnapshot,
   formatMarketReport,
   getMarketReportSlot,
+  getMarketTestSlot,
   marketReportKey
 } from '../src/market.js';
 
-test('fetchMarketSnapshot maps CoinGecko market and SPCXx responses', async () => {
+test('fetchMarketSnapshot maps public Bybit ticker and candle responses without credentials', async () => {
   const requests = [];
+  const prices = {
+    GRAMUSDT: 3.5,
+    BTCUSDT: 64000,
+    SPCXXUSDT: 150.16
+  };
   const fetchImpl = async (url, options) => {
     requests.push({ url, options });
+    const parsedUrl = new URL(url);
+    const pair = parsedUrl.searchParams.get('symbol');
+    const price = prices[pair];
 
-    if (url.includes('/coins/markets')) {
+    if (parsedUrl.pathname.endsWith('/tickers')) {
       return new Response(
-        JSON.stringify([
-          {
-            id: 'bitcoin',
-            current_price: 64000,
-            price_change_percentage_1h_in_currency: 0.1,
-            price_change_percentage_24h_in_currency: 1.2,
-            price_change_percentage_7d_in_currency: 3.4,
-            last_updated: '2026-07-11T09:00:00Z'
-          },
-          {
-            id: 'the-open-network',
-            current_price: 3.5,
-            price_change_percentage_1h_in_currency: -0.2,
-            price_change_percentage_24h_in_currency: 0.8,
-            price_change_percentage_7d_in_currency: -1.1,
-            last_updated: '2026-07-11T09:00:00Z'
-          }
-        ]),
+        JSON.stringify({
+          retCode: 0,
+          retMsg: 'OK',
+          result: { list: [{ symbol: pair, lastPrice: String(price), price24hPcnt: '0.012' }] }
+        }),
         { status: 200 }
       );
     }
 
+    const newestCandleTime = 1784052000000;
+    const candles = Array.from({ length: 169 }, (_, index) => [
+      String(newestCandleTime - index * 60 * 60 * 1000),
+      String(price),
+      String(price),
+      String(price),
+      String(price),
+      '1',
+      String(price)
+    ]);
+    candles[1][4] = String(price / 1.01);
+    candles.at(-1)[1] = String(price / 1.07);
+
     return new Response(
       JSON.stringify({
-        spcxx: {
-          usd: 150.16,
-          usd_24h_change: -0.5,
-          last_updated_at: 1783760400
-        }
+        retCode: 0,
+        retMsg: 'OK',
+        result: { list: candles }
       }),
       { status: 200 }
     );
   };
 
-  const snapshot = await fetchMarketSnapshot('demo-key', fetchImpl);
+  const snapshot = await fetchMarketSnapshot(fetchImpl);
 
   assert.deepEqual(
     snapshot.assets.map((asset) => [asset.id, asset.price]),
@@ -60,9 +67,12 @@ test('fetchMarketSnapshot maps CoinGecko market and SPCXx responses', async () =
       ['spcxx', 150.16]
     ]
   );
-  assert.equal(snapshot.assets[2].change1h, null);
-  assert.equal(requests.length, 2);
-  assert.equal(requests[0].options.headers['x-cg-demo-api-key'], 'demo-key');
+  assert.equal(snapshot.assets[0].change24h, 1.2);
+  assert.ok(Math.abs(snapshot.assets[0].change1h - 1) < 0.001);
+  assert.ok(Math.abs(snapshot.assets[0].change7d - 7) < 0.001);
+  assert.equal(requests.length, 6);
+  assert.equal(requests.every(({ options }) => !options.headers.authorization), true);
+  assert.equal(requests.every(({ options }) => !options.headers['x-api-key']), true);
 });
 
 test('getMarketReportSlot follows Zagreb summer and winter time', () => {
@@ -82,6 +92,14 @@ test('getMarketReportSlot follows Zagreb summer and winter time', () => {
     label: '11:00'
   });
   assert.equal(getMarketReportSlot('2026-07-11T10:00:00Z'), null);
+});
+
+test('getMarketTestSlot uses the current Zagreb time without scheduled-hour filtering', () => {
+  assert.deepEqual(getMarketTestSlot('2026-07-11T10:34:00Z'), {
+    date: '2026-07-11',
+    hour: 12,
+    label: '12:34'
+  });
 });
 
 test('marketReportKey creates one idempotency key per report slot', () => {
@@ -147,6 +165,7 @@ test('formatMarketReport includes prices, previous change and disclaimer', () =>
   assert.match(text, /Bitcoin \(BTC\): \$64,120\.00/);
   assert.match(text, /SpaceX xStock \(SPCXx\): \$150\.16/);
   assert.match(text, /С прошлого отчёта: \+2\.94%/);
+  assert.match(text, /публичный Bybit API/);
   assert.match(text, /SPCXx — токенизированный трекер SpaceX/);
   assert.match(text, /Не является инвестиционной рекомендацией/);
 });

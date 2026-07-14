@@ -3,6 +3,7 @@ import {
   fetchMarketSnapshot,
   formatMarketReport,
   getMarketReportSlot,
+  getMarketTestSlot,
   marketReportKey
 } from './market.js';
 
@@ -28,6 +29,7 @@ const ADMIN_COMMAND = '/admin';
 const STATS_COMMAND = '/stats';
 const SOURCES_COMMAND = '/sources';
 const AUTO_POST_TEST_COMMAND = '/auto_post_test';
+const MARKET_TEST_COMMAND = '/market_test';
 const ADMIN_HELP_TEXT = `BroNews admin commands:
 
 /draft_news - create AI draft from latest unprocessed news
@@ -37,6 +39,7 @@ const ADMIN_HELP_TEXT = `BroNews admin commands:
 /stats - show bot draft and source stats
 /sources - show RSS source diagnostics
 /auto_post_test - run one automatic post cycle now
+/market_test - publish one market report to the finance channel
 /ai_test - check OpenAI API connection
 /test_channel - send test message to channel
 /mock_news - send mock news post to channel
@@ -1207,9 +1210,9 @@ async function runAutoPost(env) {
   }
 }
 
-async function runMarketReport(env, scheduledTime) {
+async function runMarketReport(env, scheduledTime, { force = false } = {}) {
   try {
-    const slot = getMarketReportSlot(scheduledTime);
+    const slot = force ? getMarketTestSlot(scheduledTime) : getMarketReportSlot(scheduledTime);
     if (!slot) {
       return { ok: true, reason: 'outside_report_hours' };
     }
@@ -1222,8 +1225,8 @@ async function runMarketReport(env, scheduledTime) {
       return { ok: false, reason: 'DRAFTS KV is not configured' };
     }
 
-    const reportKey = marketReportKey(slot);
-    if (await env.DRAFTS.get(reportKey)) {
+    const reportKey = force ? null : marketReportKey(slot);
+    if (reportKey && (await env.DRAFTS.get(reportKey))) {
       return { ok: true, reason: 'already_published' };
     }
 
@@ -1235,21 +1238,31 @@ async function runMarketReport(env, scheduledTime) {
       previousSnapshot = null;
     }
 
-    const snapshot = await fetchMarketSnapshot(env.COINGECKO_API_KEY);
+    const snapshot = await fetchMarketSnapshot();
     const report = formatMarketReport(snapshot, previousSnapshot, slot);
     await sendTelegramMessage(env, env.FINANCE_CHANNEL_ID, report);
 
-    await Promise.all([
-      env.DRAFTS.put(MARKET_LATEST_KV_KEY, JSON.stringify(snapshot)),
-      env.DRAFTS.put(reportKey, JSON.stringify({ publishedAt: new Date().toISOString() }), {
-        expirationTtl: MARKET_REPORT_TTL_SECONDS
-      })
-    ]);
+    const kvWrites = [env.DRAFTS.put(MARKET_LATEST_KV_KEY, JSON.stringify(snapshot))];
+    if (reportKey) {
+      kvWrites.push(
+        env.DRAFTS.put(reportKey, JSON.stringify({ publishedAt: new Date().toISOString() }), {
+          expirationTtl: MARKET_REPORT_TTL_SECONDS
+        })
+      );
+    }
+    await Promise.all(kvWrites);
 
     return { ok: true, reason: 'published' };
   } catch (error) {
     console.error('Market report failed', error);
     return { ok: false, reason: error instanceof Error ? error.message : 'Market report runtime error' };
+  }
+}
+
+async function runScheduledMarketReport(env, scheduledTime) {
+  const result = await runMarketReport(env, scheduledTime);
+  if (!result.ok) {
+    throw new Error(result.reason || 'Market report failed');
   }
 }
 
@@ -1447,6 +1460,16 @@ export default {
         await sendTelegramMessage(env, userChatId, `Auto post test failed ❌ ${autoPostResult.reason || 'Unknown error'}`);
         return jsonResponse({ ok: true });
       }
+
+      if (messageText === MARKET_TEST_COMMAND && userChatId && chatType === 'private') {
+        const marketResult = await runMarketReport(env, Date.now(), { force: true });
+        const message = marketResult.ok
+          ? `Market test ✅ Published to ${env.FINANCE_CHANNEL_ID}`
+          : `Market test failed ❌ ${marketResult.reason || 'Unknown error'}`;
+        await sendTelegramMessage(env, userChatId, message);
+        return jsonResponse({ ok: true });
+      }
+
       if (messageText === TEST_CHANNEL_COMMAND && userChatId && chatType === 'private') {
         if (!env.CHANNEL_ID) {
           await sendTelegramMessage(env, userChatId, 'CHANNEL_ID is not configured');
@@ -1595,7 +1618,7 @@ export default {
     }
 
     if (event.cron === FINANCE_CRON_EXPRESSION) {
-      ctx.waitUntil(runMarketReport(env, event.scheduledTime));
+      ctx.waitUntil(runScheduledMarketReport(env, event.scheduledTime));
     }
   }
 };
