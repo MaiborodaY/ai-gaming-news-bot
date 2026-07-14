@@ -134,7 +134,7 @@ test('formatMarketReport uses clear trend wording, prices and disclaimer', () =>
         name: 'Bitcoin',
         symbol: 'BTC',
         price: 64120,
-        change1h: -0.02,
+        change1h: -0.001,
         change24h: 4.21,
         change7d: 0.64
       },
@@ -164,12 +164,14 @@ test('formatMarketReport uses clear trend wording, prices and disclaimer', () =>
   assert.match(text, /1 ч: \+0\.50%/);
   assert.match(text, /7 дн\.: -2\.17%/);
   assert.match(text, /₿ Bitcoin \(BTC\) — \$64,120\.00/);
+  assert.match(text, /1 ч: 0\.00% • 24 ч: \+4\.21%/);
   assert.match(text, /🚀 SpaceX xStock \(SPCXx\) — \$150\.16/);
   assert.match(text, /С прошлого выпуска: \+2\.94%/);
   assert.match(text, /📈 Прогноз: За сутки цена выросла, но недельный минус ещё не отыгран/);
   assert.match(text, /📈 Прогноз: За сутки цена заметно выросла/);
   assert.match(text, /📉 Прогноз: За сутки цена немного восстановилась/);
   assert.doesNotMatch(text, /Сигнал|смешанный|импульс|🔮|публичный Bybit API|токенизированный/);
+  assert.doesNotMatch(text, /-0\.00%/);
   assert.match(text, /Не является инвестиционной рекомендацией/);
   assert.ok(text.length <= 1000);
 });

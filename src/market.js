@@ -169,8 +169,9 @@ function formatPercent(value) {
     return 'нет данных';
   }
 
-  const sign = value > 0 ? '+' : '';
-  return `${sign}${value.toFixed(2)}%`;
+  const roundedValue = Math.abs(value) < 0.005 ? 0 : value;
+  const sign = roundedValue > 0 ? '+' : '';
+  return `${sign}${roundedValue.toFixed(2)}%`;
 }
 
 function getChangeSincePrevious(asset, previousSnapshot) {

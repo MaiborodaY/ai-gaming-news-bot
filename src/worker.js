@@ -1241,14 +1241,32 @@ async function runMarketReport(env, scheduledTime, { force = false } = {}) {
 
     const snapshot = await fetchMarketSnapshot();
     const report = formatMarketReport(snapshot, previousSnapshot, slot);
-    const chartResult = await sendTelegramPhotoUpload(
-      env,
-      env.FINANCE_CHANNEL_ID,
-      buildMarketChartUrl(snapshot),
-      report
-    );
-    if (!chartResult.ok) {
-      console.warn('Market chart upload failed, sending text report', chartResult.error);
+    const chartUrl = buildMarketChartUrl(snapshot);
+    const chartUrlResult = await sendTelegramPhotoOnly(env, env.FINANCE_CHANNEL_ID, chartUrl, report);
+    let imageMode = 'url';
+    let imageError = null;
+
+    if (!chartUrlResult.ok) {
+      const chartUploadResult = await sendTelegramPhotoUpload(
+        env,
+        env.FINANCE_CHANNEL_ID,
+        chartUrl,
+        report
+      );
+
+      if (chartUploadResult.ok) {
+        imageMode = 'upload';
+      } else {
+        imageMode = 'text';
+        imageError = `URL: ${chartUrlResult.error}; upload: ${chartUploadResult.error}`.slice(0, 900);
+        console.warn('Market chart failed, sending text report', {
+          urlError: chartUrlResult.error,
+          uploadError: chartUploadResult.error
+        });
+      }
+    }
+
+    if (imageMode === 'text') {
       await sendTelegramMessage(env, env.FINANCE_CHANNEL_ID, report);
     }
 
@@ -1262,7 +1280,7 @@ async function runMarketReport(env, scheduledTime, { force = false } = {}) {
     }
     await Promise.all(kvWrites);
 
-    return { ok: true, reason: 'published' };
+    return { ok: true, reason: 'published', imageMode, imageError };
   } catch (error) {
     console.error('Market report failed', error);
     return { ok: false, reason: error instanceof Error ? error.message : 'Market report runtime error' };
@@ -1473,9 +1491,14 @@ export default {
 
       if (messageText === MARKET_TEST_COMMAND && userChatId && chatType === 'private') {
         const marketResult = await runMarketReport(env, Date.now(), { force: true });
-        const message = marketResult.ok
-          ? `Market test ✅ Published to ${env.FINANCE_CHANNEL_ID}`
-          : `Market test failed ❌ ${marketResult.reason || 'Unknown error'}`;
+        let message;
+        if (!marketResult.ok) {
+          message = `Market test failed ❌ ${marketResult.reason || 'Unknown error'}`;
+        } else if (marketResult.imageMode === 'text') {
+          message = `Market test ⚠️ Published as text\nImage error: ${marketResult.imageError || 'Unknown error'}`;
+        } else {
+          message = `Market test ✅ Published with image (${marketResult.imageMode})`;
+        }
         await sendTelegramMessage(env, userChatId, message);
         return jsonResponse({ ok: true });
       }
