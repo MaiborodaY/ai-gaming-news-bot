@@ -211,54 +211,104 @@ export function classifyMarketTrend(asset) {
 function getTrendText(trend) {
   if (trend === 'positive') {
     return {
-      signal: 'положительный',
-      outlook: 'рост вероятнее при сохранении текущего импульса'
+      current: 'больше признаков роста',
+      outlook: 'скорее рост, если текущая динамика сохранится'
     };
   }
 
   if (trend === 'negative') {
     return {
-      signal: 'отрицательный',
-      outlook: 'давление вниз может сохраниться без разворота импульса'
+      current: 'больше признаков снижения',
+      outlook: 'скорее снижение, если текущая динамика сохранится'
     };
   }
 
   return {
-    signal: 'смешанный',
-    outlook: 'вероятнее боковое движение до появления нового импульса'
+    current: 'явного направления пока нет',
+    outlook: 'скорее цена останется примерно на текущем уровне'
   };
 }
 
+export function buildMarketChartUrl(snapshot) {
+  const values = snapshot.assets.map((asset) =>
+    Number.isFinite(asset.change24h) ? Number(asset.change24h.toFixed(2)) : 0
+  );
+  const chart = {
+    type: 'bar',
+    data: {
+      labels: snapshot.assets.map((asset) => asset.symbol),
+      datasets: [
+        {
+          data: values,
+          backgroundColor: values.map((value) => (value >= 0 ? '#22c55e' : '#ef4444')),
+          borderWidth: 0,
+          borderRadius: 8
+        }
+      ]
+    },
+    options: {
+      plugins: {
+        legend: { display: false },
+        title: {
+          display: true,
+          text: 'Изменение цены за 24 часа, %',
+          color: '#f9fafb',
+          font: { size: 28, weight: 'bold' }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#f9fafb', font: { size: 20, weight: 'bold' } },
+          grid: { display: false }
+        },
+        y: {
+          ticks: { color: '#d1d5db', font: { size: 16 } },
+          grid: { color: '#374151' },
+          title: { display: true, text: '%', color: '#d1d5db', font: { size: 16 } }
+        }
+      }
+    }
+  };
+  const url = new URL('https://quickchart.io/chart');
+  url.searchParams.set('width', '1200');
+  url.searchParams.set('height', '630');
+  url.searchParams.set('devicePixelRatio', '1');
+  url.searchParams.set('format', 'png');
+  url.searchParams.set('backgroundColor', '#111827');
+  url.searchParams.set('version', '4');
+  url.searchParams.set('c', JSON.stringify(chart));
+  return url.toString();
+}
+
 export function formatMarketReport(snapshot, previousSnapshot, slot) {
+  const assetEmojis = {
+    'the-open-network': '💎',
+    bitcoin: '🟠',
+    spcxx: '🚀'
+  };
   const assetBlocks = snapshot.assets.map((asset) => {
     const trendText = getTrendText(classifyMarketTrend(asset));
     const sincePrevious = getChangeSincePrevious(asset, previousSnapshot);
     const displayName = asset.symbol === asset.name ? asset.name : `${asset.name} (${asset.symbol})`;
-    const changeLines = [];
-
-    if (Number.isFinite(asset.change1h)) {
-      changeLines.push(`За 1 час: ${formatPercent(asset.change1h)}`);
-    }
-
-    changeLines.push(`За 24 часа: ${formatPercent(asset.change24h)}`);
-
-    if (Number.isFinite(asset.change7d)) {
-      changeLines.push(`За 7 дней: ${formatPercent(asset.change7d)}`);
-    }
+    const changes = [
+      Number.isFinite(asset.change1h) ? `1 ч: ${formatPercent(asset.change1h)}` : null,
+      `24 ч: ${formatPercent(asset.change24h)}`,
+      Number.isFinite(asset.change7d) ? `7 дн.: ${formatPercent(asset.change7d)}` : null
+    ].filter(Boolean);
 
     return [
-      `${displayName}: ${formatUsd(asset.price)}`,
-      ...changeLines,
+      `${assetEmojis[asset.id] || '📌'} ${displayName} — ${formatUsd(asset.price)}`,
+      changes.join(' • '),
       `С прошлого отчёта: ${formatPercent(sincePrevious)}`,
-      `Сигнал: ${trendText.signal}`,
-      `Ожидание: ${trendText.outlook}`
+      `👀 Сейчас: ${trendText.current}`,
+      `🔮 Дальше: ${trendText.outlook}`
     ].join('\n');
   });
 
   return [
-    `📊 Рынок — ${slot.label}, Хорватия`,
+    `📊 Рынок • ${slot.label} (Хорватия)`,
     ...assetBlocks,
-    'Данные: публичный Bybit API. SPCXx — токенизированный трекер SpaceX, а не обычная акция.',
-    'Не является инвестиционной рекомендацией.'
+    'ℹ️ Данные: публичный Bybit API. SPCXx — токенизированный трекер SpaceX, не обычная акция.',
+    '⚠️ Не является инвестиционной рекомендацией.'
   ].join('\n\n');
 }

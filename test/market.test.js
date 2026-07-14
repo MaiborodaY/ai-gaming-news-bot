@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildMarketChartUrl,
   classifyMarketTrend,
   fetchMarketSnapshot,
   formatMarketReport,
@@ -116,7 +117,7 @@ test('classifyMarketTrend classifies positive, negative and neutral momentum', (
   assert.equal(classifyMarketTrend({ change1h: null, change24h: 1, change7d: null }), 'positive');
 });
 
-test('formatMarketReport includes prices, previous change and disclaimer', () => {
+test('formatMarketReport uses clear trend wording, prices and disclaimer', () => {
   const snapshot = {
     assets: [
       {
@@ -133,9 +134,9 @@ test('formatMarketReport includes prices, previous change and disclaimer', () =>
         name: 'Bitcoin',
         symbol: 'BTC',
         price: 64120,
-        change1h: -0.1,
-        change24h: -1.2,
-        change7d: 1
+        change1h: -1,
+        change24h: -2,
+        change7d: -3
       },
       {
         id: 'spcxx',
@@ -158,14 +159,39 @@ test('formatMarketReport includes prices, previous change and disclaimer', () =>
 
   const text = formatMarketReport(snapshot, previousSnapshot, { label: '11:00' });
 
-  assert.match(text, /11:00, Хорватия/);
-  assert.match(text, /TON: \$3\.50/);
-  assert.match(text, /За 1 час: \+0\.50%/);
-  assert.match(text, /За 7 дней: \+4\.00%/);
-  assert.match(text, /Bitcoin \(BTC\): \$64,120\.00/);
-  assert.match(text, /SpaceX xStock \(SPCXx\): \$150\.16/);
+  assert.match(text, /11:00 \(Хорватия\)/);
+  assert.match(text, /💎 TON — \$3\.50/);
+  assert.match(text, /1 ч: \+0\.50%/);
+  assert.match(text, /7 дн\.: \+4\.00%/);
+  assert.match(text, /🟠 Bitcoin \(BTC\) — \$64,120\.00/);
+  assert.match(text, /🚀 SpaceX xStock \(SPCXx\) — \$150\.16/);
   assert.match(text, /С прошлого отчёта: \+2\.94%/);
+  assert.match(text, /Сейчас: больше признаков роста/);
+  assert.match(text, /Дальше: скорее снижение, если текущая динамика сохранится/);
+  assert.match(text, /Сейчас: явного направления пока нет/);
+  assert.doesNotMatch(text, /Сигнал|смешанный|импульс/);
   assert.match(text, /публичный Bybit API/);
   assert.match(text, /SPCXx — токенизированный трекер SpaceX/);
   assert.match(text, /Не является инвестиционной рекомендацией/);
+  assert.ok(text.length <= 1000);
+});
+
+test('buildMarketChartUrl creates a public chart without credentials', () => {
+  const snapshot = {
+    assets: [
+      { symbol: 'TON', change24h: 2.47 },
+      { symbol: 'BTC', change24h: -1.23 },
+      { symbol: 'SPCXx', change24h: null }
+    ]
+  };
+
+  const url = new URL(buildMarketChartUrl(snapshot));
+  const chart = JSON.parse(url.searchParams.get('c'));
+
+  assert.equal(url.origin, 'https://quickchart.io');
+  assert.equal(url.searchParams.get('format'), 'png');
+  assert.equal(url.searchParams.has('key'), false);
+  assert.deepEqual(chart.data.labels, ['TON', 'BTC', 'SPCXx']);
+  assert.deepEqual(chart.data.datasets[0].data, [2.47, -1.23, 0]);
+  assert.deepEqual(chart.data.datasets[0].backgroundColor, ['#22c55e', '#ef4444', '#22c55e']);
 });

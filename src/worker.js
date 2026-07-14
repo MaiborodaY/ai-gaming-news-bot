@@ -1,5 +1,6 @@
 import {
   FINANCE_CRON_EXPRESSION,
+  buildMarketChartUrl,
   fetchMarketSnapshot,
   formatMarketReport,
   getMarketReportSlot,
@@ -1240,7 +1241,16 @@ async function runMarketReport(env, scheduledTime, { force = false } = {}) {
 
     const snapshot = await fetchMarketSnapshot();
     const report = formatMarketReport(snapshot, previousSnapshot, slot);
-    await sendTelegramMessage(env, env.FINANCE_CHANNEL_ID, report);
+    const chartResult = await sendTelegramPhotoUpload(
+      env,
+      env.FINANCE_CHANNEL_ID,
+      buildMarketChartUrl(snapshot),
+      report
+    );
+    if (!chartResult.ok) {
+      console.warn('Market chart upload failed, sending text report', chartResult.error);
+      await sendTelegramMessage(env, env.FINANCE_CHANNEL_ID, report);
+    }
 
     const kvWrites = [env.DRAFTS.put(MARKET_LATEST_KV_KEY, JSON.stringify(snapshot))];
     if (reportKey) {
