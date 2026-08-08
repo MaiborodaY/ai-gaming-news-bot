@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 
 import {
   cleanCroatiaFeedText,
+  createCroatiaNewsTelegramOptions,
   croatiaNewsItemKey,
   croatiaNewsSlotKey,
+  escapeTelegramHtml,
   formatCroatiaNewsPost,
   getCroatiaNewsSlot,
   getCroatiaNewsTestSlot,
   isFreshCroatiaNews,
+  isOfficialCroatiaNewsLink,
   isOfficialHrtLink,
+  isRijekaNewsSlot,
   normalizeCroatiaNewsLink,
   parseCroatiaNewsSelection
 } from '../src/croatia-news.js';
@@ -49,6 +53,12 @@ test('getCroatiaNewsTestSlot keeps the current Zagreb minutes', () => {
   });
 });
 
+test('16:00 Zagreb slot is reserved for the daily Rijeka post', () => {
+  assert.equal(isRijekaNewsSlot({ hour: 16 }), true);
+  assert.equal(isRijekaNewsSlot({ hour: 13 }), false);
+  assert.equal(isRijekaNewsSlot(null), false);
+});
+
 test('HRT URL validation accepts only official HTTPS hosts', () => {
   assert.equal(isOfficialHrtLink('https://vijesti.hrt.hr/hrvatska/test-123'), true);
   assert.equal(isOfficialHrtLink('https://hrt.hr/vijesti/test'), true);
@@ -57,12 +67,23 @@ test('HRT URL validation accepts only official HTTPS hosts', () => {
   assert.equal(isOfficialHrtLink('not a url'), false);
 });
 
+test('Croatian news URL validation also accepts the official Rijeka city portal', () => {
+  assert.equal(isOfficialCroatiaNewsLink('https://www.rijeka.hr/vazna-vijest/'), true);
+  assert.equal(isOfficialCroatiaNewsLink('https://data.rijeka.hr/test'), true);
+  assert.equal(isOfficialCroatiaNewsLink('http://www.rijeka.hr/test'), false);
+  assert.equal(isOfficialCroatiaNewsLink('https://rijeka.hr.example.com/test'), false);
+});
+
 test('normalizeCroatiaNewsLink removes query, hash and trailing slash', () => {
   assert.equal(
     normalizeCroatiaNewsLink('https://vijesti.hrt.hr/hrvatska/test-123/?utm_source=rss#section'),
     'https://vijesti.hrt.hr/hrvatska/test-123'
   );
   assert.equal(normalizeCroatiaNewsLink('https://example.com/test'), '');
+  assert.equal(
+    normalizeCroatiaNewsLink('https://www.rijeka.hr/vijest/?ref=rss#program'),
+    'https://www.rijeka.hr/vijest'
+  );
 });
 
 test('isFreshCroatiaNews enforces publication date and maximum age', () => {
@@ -75,6 +96,10 @@ test('isFreshCroatiaNews enforces publication date and maximum age', () => {
 test('cleanCroatiaFeedText converts RSS HTML into compact plain text', () => {
   const input = '<![CDATA[<p>Prva &amp; važna vijest.</p><script>ignore()</script><p>Drugi red&nbsp;teksta.</p>]]>';
   assert.equal(cleanCroatiaFeedText(input), 'Prva & važna vijest. Drugi red teksta.');
+  assert.equal(
+    cleanCroatiaFeedText('Važna gradska vijest. Post Važna gradska vijest je prvi puta viđen na Grad Rijeka .'),
+    'Važna gradska vijest.'
+  );
 });
 
 test('parseFeedItems reads the HRT description only when requested', () => {
@@ -119,7 +144,11 @@ test('parseCroatiaNewsSelection validates index and cleans generated text', () =
   );
 });
 
-test('formatCroatiaNewsPost keeps HRT attribution and one summary paragraph', () => {
+test('escapeTelegramHtml protects generated text and link attributes', () => {
+  assert.equal(escapeTelegramHtml('A & B <test> "quote"'), 'A &amp; B &lt;test&gt; &quot;quote&quot;');
+});
+
+test('formatCroatiaNewsPost uses linked headline and bottom source attribution', () => {
   const link = 'https://vijesti.hrt.hr/hrvatska/test-123';
   const post = formatCroatiaNewsPost(
     {
@@ -132,16 +161,54 @@ test('formatCroatiaNewsPost keeps HRT attribution and one summary paragraph', ()
 
   assert.equal(
     post,
-    `🇭🇷 В Хорватии приняли важное решение\n\nИсточник: HRT\n${link}\n\nИзменение вступит в силу завтра. Оно касается всей страны.`
+    `🇭🇷 <a href="${link}">В Хорватии приняли важное решение</a>\n\nИзменение вступит в силу завтра. Оно касается всей страны.\n\n<a href="${link}">Источник: HRT</a>`
   );
   assert.ok(post.indexOf(link) < post.indexOf('Изменение'));
+  assert.ok(post.lastIndexOf('Источник: HRT') > post.indexOf('Изменение'));
+  assert.equal(post.includes(`\n${link}`), false);
   assert.ok(post.length < 1000);
+});
+
+test('formatCroatiaNewsPost marks Rijeka posts and escapes AI text', () => {
+  const link = 'https://www.rijeka.hr/vijest/';
+  const post = formatCroatiaNewsPost(
+    {
+      selected: true,
+      headline: 'Риека: дороги & транспорт',
+      summary: 'Работы пройдут на участке <центра>.'
+    },
+    { link, source: 'Grad Rijeka' },
+    { isRijeka: true }
+  );
+
+  assert.match(post, /^🌊 /);
+  assert.match(post, /дороги &amp; транспорт/);
+  assert.match(post, /&lt;центра&gt;/);
+  assert.match(post, /Источник: Grad Rijeka/);
+});
+
+test('createCroatiaNewsTelegramOptions enables a large preview above the post', () => {
+  const link = 'https://radio.hrt.hr/radio-rijeka/vijesti/test-123';
+  assert.deepEqual(createCroatiaNewsTelegramOptions(link), {
+    parse_mode: 'HTML',
+    link_preview_options: {
+      is_disabled: false,
+      url: link,
+      prefer_large_media: true,
+      show_above_text: true
+    }
+  });
+  assert.equal(createCroatiaNewsTelegramOptions('https://example.com/test'), null);
 });
 
 test('Croatian news KV keys are separate and stable', () => {
   assert.equal(
     croatiaNewsItemKey('https://vijesti.hrt.hr/hrvatska/test-123/?ref=rss'),
     'croatia-news:item:https://vijesti.hrt.hr/hrvatska/test-123'
+  );
+  assert.equal(
+    croatiaNewsItemKey('https://www.rijeka.hr/vijest/?ref=rss'),
+    'croatia-news:item:https://www.rijeka.hr/vijest'
   );
   assert.equal(
     croatiaNewsSlotKey({ date: '2026-07-11', hour: 13 }),

@@ -1,6 +1,7 @@
 export const CROATIA_NEWS_CRON_EXPRESSION = '0 8,9,11,12,14,15,17,18 * * *';
 
 const CROATIA_NEWS_HOURS = new Set([10, 13, 16, 19]);
+const RIJEKA_NEWS_HOUR = 16;
 const ZAGREB_TIME_ZONE = 'Europe/Zagreb';
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -54,6 +55,10 @@ export function getCroatiaNewsTestSlot(value) {
   return zagrebTime ? createSlot(zagrebTime, true) : null;
 }
 
+export function isRijekaNewsSlot(slot) {
+  return slot?.hour === RIJEKA_NEWS_HOUR;
+}
+
 export function isOfficialHrtLink(link) {
   try {
     const url = new URL(link);
@@ -63,8 +68,21 @@ export function isOfficialHrtLink(link) {
   }
 }
 
+export function isOfficialCroatiaNewsLink(link) {
+  if (isOfficialHrtLink(link)) {
+    return true;
+  }
+
+  try {
+    const url = new URL(link);
+    return url.protocol === 'https:' && (url.hostname === 'rijeka.hr' || url.hostname.endsWith('.rijeka.hr'));
+  } catch {
+    return false;
+  }
+}
+
 export function normalizeCroatiaNewsLink(link) {
-  if (!isOfficialHrtLink(link)) {
+  if (!isOfficialCroatiaNewsLink(link)) {
     return '';
   }
 
@@ -102,6 +120,7 @@ export function cleanCroatiaFeedText(value = '') {
     .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
     .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
     .replace(/\s+/g, ' ')
+    .replace(/\s+Post\s+.+?\s+je prvi puta viđen na\s+Grad Rijeka\s*\.?\s*$/i, '')
     .trim()
     .slice(0, 1200);
 }
@@ -113,6 +132,14 @@ function cleanGeneratedText(value, maxLength) {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLength);
+}
+
+export function escapeTelegramHtml(value = '') {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 export function parseCroatiaNewsSelection(text, candidateCount) {
@@ -147,19 +174,37 @@ export function parseCroatiaNewsSelection(text, candidateCount) {
   }
 }
 
-export function formatCroatiaNewsPost(selection, item) {
-  if (!selection?.selected || !isOfficialHrtLink(item?.link)) {
+export function formatCroatiaNewsPost(selection, item, { isRijeka = false } = {}) {
+  if (!selection?.selected || !isOfficialCroatiaNewsLink(item?.link)) {
     return null;
   }
 
   const headline = cleanGeneratedText(selection.headline, 140);
   const summary = cleanGeneratedText(selection.summary, 650);
-  const link = item.link.trim();
+  const link = escapeTelegramHtml(item.link.trim());
+  const source = escapeTelegramHtml(item.source || 'HRT');
   if (!headline || !summary) {
     return null;
   }
 
-  return `🇭🇷 ${headline}\n\nИсточник: HRT\n${link}\n\n${summary}`;
+  const icon = isRijeka ? '🌊' : '🇭🇷';
+  return `${icon} <a href="${link}">${escapeTelegramHtml(headline)}</a>\n\n${escapeTelegramHtml(summary)}\n\n<a href="${link}">Источник: ${source}</a>`;
+}
+
+export function createCroatiaNewsTelegramOptions(link) {
+  if (!isOfficialCroatiaNewsLink(link)) {
+    return null;
+  }
+
+  return {
+    parse_mode: 'HTML',
+    link_preview_options: {
+      is_disabled: false,
+      url: link,
+      prefer_large_media: true,
+      show_above_text: true
+    }
+  };
 }
 
 export function croatiaNewsItemKey(link) {
