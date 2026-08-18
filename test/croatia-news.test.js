@@ -22,13 +22,11 @@ import { parseFeedItems } from '../src/worker.js';
 test('getCroatiaNewsSlot follows Zagreb summer and winter time', () => {
   const summerSlots = [
     ['2026-07-11T08:00:00Z', 10],
-    ['2026-07-11T11:00:00Z', 13],
     ['2026-07-11T14:00:00Z', 16],
     ['2026-07-11T17:00:00Z', 19]
   ];
   const winterSlots = [
     ['2026-01-11T09:00:00Z', 10],
-    ['2026-01-11T12:00:00Z', 13],
     ['2026-01-11T15:00:00Z', 16],
     ['2026-01-11T18:00:00Z', 19]
   ];
@@ -42,6 +40,8 @@ test('getCroatiaNewsSlot follows Zagreb summer and winter time', () => {
   }
 
   assert.equal(getCroatiaNewsSlot('2026-07-11T09:00:00Z'), null);
+  assert.equal(getCroatiaNewsSlot('2026-07-11T11:00:00Z'), null);
+  assert.equal(getCroatiaNewsSlot('2026-01-11T12:00:00Z'), null);
   assert.equal(getCroatiaNewsSlot('2026-07-11T19:00:00Z'), null);
 });
 

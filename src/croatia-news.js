@@ -1,6 +1,6 @@
-export const CROATIA_NEWS_CRON_EXPRESSION = '0 8,9,11,12,14,15,17,18 * * *';
+export const CROATIA_NEWS_CRON_EXPRESSION = '0 8,9,14,15,17,18 * * *';
 
-const CROATIA_NEWS_HOURS = new Set([10, 13, 16, 19]);
+const CROATIA_NEWS_HOURS = new Set([10, 16, 19]);
 const RIJEKA_NEWS_HOUR = 16;
 const ZAGREB_TIME_ZONE = 'Europe/Zagreb';
 const HOUR_MS = 60 * 60 * 1000;
