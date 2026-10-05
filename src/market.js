@@ -1,4 +1,4 @@
-export const FINANCE_CRON_EXPRESSION = '0 9,10,19,20 * * *';
+export const FINANCE_CRON_EXPRESSION = '0 19,20 * * *';
 
 const BYBIT_API_BASE_URL = 'https://api.bybit.com/v5/market';
 const BYBIT_ASSETS = [
@@ -8,7 +8,7 @@ const BYBIT_ASSETS = [
 ];
 const BYBIT_KLINE_LIMIT = 169;
 const HOUR_MS = 60 * 60 * 1000;
-const REPORT_HOURS = new Set([11, 21]);
+const REPORT_HOURS = new Set([21]);
 const ZAGREB_TIME_ZONE = 'Europe/Zagreb';
 
 const zagrebDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {

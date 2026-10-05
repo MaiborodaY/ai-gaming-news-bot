@@ -77,21 +77,18 @@ test('fetchMarketSnapshot maps public Bybit ticker and candle responses without 
 });
 
 test('getMarketReportSlot follows Zagreb summer and winter time', () => {
-  assert.deepEqual(getMarketReportSlot('2026-07-11T09:00:00Z'), {
-    date: '2026-07-11',
-    hour: 11,
-    label: '11:00'
-  });
   assert.deepEqual(getMarketReportSlot('2026-07-11T19:00:00Z'), {
     date: '2026-07-11',
     hour: 21,
     label: '21:00'
   });
-  assert.deepEqual(getMarketReportSlot('2026-01-11T10:00:00Z'), {
+  assert.deepEqual(getMarketReportSlot('2026-01-11T20:00:00Z'), {
     date: '2026-01-11',
-    hour: 11,
-    label: '11:00'
+    hour: 21,
+    label: '21:00'
   });
+  assert.equal(getMarketReportSlot('2026-07-11T09:00:00Z'), null);
+  assert.equal(getMarketReportSlot('2026-01-11T10:00:00Z'), null);
   assert.equal(getMarketReportSlot('2026-07-11T10:00:00Z'), null);
 });
 
