@@ -21,7 +21,7 @@ import {
   isRijekaNewsSlot,
   parseCroatiaNewsSelection
 } from './croatia-news.js';
-import { AI_NEWS_CRON_EXPRESSION, AI_NEWS_SOURCES, isAiNewsSlot } from './ai-news.js';
+import { AI_NEWS_CRON_EXPRESSION, AI_NEWS_FALLBACK_IMAGE_URL, AI_NEWS_SOURCES, isAiNewsSlot } from './ai-news.js';
 import {
   WORLD_NEWS_SOURCES,
   createWorldNewsTelegramOptions,
@@ -529,7 +529,11 @@ async function fetchOpenGraphImageCandidates(pageUrl) {
 async function enrichNewsItemImage(item) {
   // Some sources do not expose images in RSS, but keep them in article metadata.
   const openGraphCandidates = await fetchOpenGraphImageCandidates(item.link);
-  const allCandidates = deduplicateImageUrls([...(item.imageCandidates || []), ...openGraphCandidates]);
+  // Try article photos first, then our own illustration even if the original photo cannot be delivered.
+  const allCandidates = deduplicateImageUrls([
+    ...(item.imageCandidates || []), ...openGraphCandidates,
+    ...(item.topic === 'ai' ? [AI_NEWS_FALLBACK_IMAGE_URL] : [])
+  ]);
   const imageUrl = allCandidates[0] || null;
   return { ...item, imageUrl, imageCandidates: allCandidates };
 }
@@ -1310,11 +1314,16 @@ async function publishNewsItem(env, item) {
   }
 
   const imageCandidates = deduplicateImageUrls(enrichedItem.imageCandidates || (enrichedItem.imageUrl ? [enrichedItem.imageUrl] : []));
+  let imageDelivery = { mode: 'text', imageUrl: null, error: null };
   if (imageCandidates.length > 0) {
-    await sendTelegramPhotoWithFallbackCandidates(env, env.CHANNEL_ID, imageCandidates, post);
+    const photo = await sendTelegramPhotoWithFallbackCandidates(env, env.CHANNEL_ID, imageCandidates, post);
+    imageDelivery = photo.ok
+      ? { mode: 'photo', imageUrl: photo.imageUrl, error: null }
+      : { mode: 'text', imageUrl: null, error: photo.error };
   } else {
     await sendTelegramMessage(env, env.CHANNEL_ID, post);
   }
+  console.info('Automatic news image delivery', { topic: item.topic || 'gaming', ...imageDelivery });
 
   const savedDraft = await getDraft(env, draftId);
   if (!savedDraft?.post) {
@@ -1323,6 +1332,7 @@ async function publishNewsItem(env, item) {
 
   const publishedDraft = {
     ...savedDraft,
+    imageDelivery,
     status: DRAFT_STATUS_PUBLISHED,
     publishedAt: new Date().toISOString()
   };

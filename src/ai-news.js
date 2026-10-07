@@ -1,4 +1,5 @@
 export const AI_NEWS_CRON_EXPRESSION = '0 10,11,18,19 * * *';
+export const AI_NEWS_FALLBACK_IMAGE_URL = 'https://ai-gaming-news-bot.mr-maybik.workers.dev/images/ai-news-illustration.png';
 
 const aiHourFormatter = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Europe/Zagreb',

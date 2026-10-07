@@ -2,6 +2,9 @@ name = "ai-gaming-news-bot"
 main = "src/worker.js"
 compatibility_date = "2026-04-30"
 
+[assets]
+directory = "./public"
+
 [vars]
 CHANNEL_ID = "@BroNewsWorld"
 FINANCE_CHANNEL_ID = "@BroProNews"
