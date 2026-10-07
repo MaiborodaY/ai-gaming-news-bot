@@ -1,4 +1,5 @@
-export const FINANCE_CRON_EXPRESSION = '0 19,20 * * *';
+// Reuse the existing morning/evening timer; publication hours are checked in the worker.
+export const FINANCE_CRON_EXPRESSION = '0 9,10,19,20 * * *';
 
 const BYBIT_API_BASE_URL = 'https://api.bybit.com/v5/market';
 const BYBIT_ASSETS = [

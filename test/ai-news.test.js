@@ -6,7 +6,6 @@ import worker from '../src/worker.js';
 import { AI_NEWS_CRON_EXPRESSION, AI_NEWS_SOURCES, isAiNewsSlot } from '../src/ai-news.js';
 import { FINANCE_CRON_EXPRESSION } from '../src/market.js';
 import { CROATIA_NEWS_CRON_EXPRESSION } from '../src/croatia-news.js';
-import { WORLD_NEWS_CRON_EXPRESSION } from '../src/world-news.js';
 
 const GAMING_CRON = '0 12-16/2 * * *';
 const STEAM_FEED = 'https://store.steampowered.com/feeds/news.xml';
@@ -236,7 +235,7 @@ test('OpenAI and image failures retain the text-only AI publication fallback', a
 
 test('BroPro cron invocations do not enter the AI or gaming flow', async (t) => {
   const state = harness(t);
-  for (const cron of [FINANCE_CRON_EXPRESSION, CROATIA_NEWS_CRON_EXPRESSION, WORLD_NEWS_CRON_EXPRESSION]) {
+  for (const cron of [FINANCE_CRON_EXPRESSION, CROATIA_NEWS_CRON_EXPRESSION]) {
     await state.run('2026-07-01T10:00:00Z', cron);
   }
 

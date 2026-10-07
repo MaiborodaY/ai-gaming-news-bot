@@ -2,11 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import worker from '../src/worker.js';
+import worker, { runEditorialNewsPost } from '../src/worker.js';
 import { FINANCE_CRON_EXPRESSION } from '../src/market.js';
 import { CROATIA_NEWS_CRON_EXPRESSION, getZagrebDateTime } from '../src/croatia-news.js';
 import {
-  WORLD_NEWS_CRON_EXPRESSION,
   WORLD_NEWS_SOURCES,
   createWorldNewsTelegramOptions,
   formatWorldNewsPost,
@@ -20,7 +19,9 @@ const NATIONAL_FEED = 'https://feed.hrt.hr/vijesti/hrvatska.xml';
 const RIJEKA_FEED = 'https://feed.hrt.hr/rijeka/latest.xml';
 const CITY_FEED = 'https://www.rijeka.hr/feed/';
 const WORLD_LINK = 'https://www.bbc.com/news/articles/world-story';
-const BROPRO_CRONS = [FINANCE_CRON_EXPRESSION, CROATIA_NEWS_CRON_EXPRESSION, WORLD_NEWS_CRON_EXPRESSION];
+const BROPRO_CRONS = [FINANCE_CRON_EXPRESSION, CROATIA_NEWS_CRON_EXPRESSION];
+// Taken from actual Cloudflare invocations after the failed October 5 release.
+const LIVE_BROPRO_CRONS = ['0 9,10,19,20 * * *', '0 8,9,14,15,17,18 * * *'];
 
 function feed(items, referenceTime) {
   return `<rss><channel>${items.map((item) => `<item>
@@ -64,6 +65,7 @@ function harness(t, referenceTime, options = {}) {
   };
   t.mock.method(console, 'error', (...args) => logs.push(args));
   t.mock.method(console, 'warn', (...args) => logs.push(args));
+  t.mock.method(console, 'info', (...args) => logs.push(args));
   // All publication, market, and AI requests stay inside the test harness.
   t.mock.method(globalThis, 'fetch', async (input, init) => {
     const url = String(input);
@@ -124,7 +126,12 @@ function harness(t, referenceTime, options = {}) {
     }
   }
   function accepted() { return publications.filter((post) => !post.failed); }
-  return { kv, requests, ai, publications, logs, invoke, run, accepted };
+  async function runWorld(timestamp) {
+    const result = await runEditorialNewsPost(env, Date.parse(timestamp), { scope: 'world' });
+    if (!result.ok) throw new Error(result.reason);
+    return result;
+  }
+  return { kv, requests, ai, publications, logs, invoke, run, runWorld, accepted };
 }
 
 for (const { date, offset } of [
@@ -160,11 +167,11 @@ for (const { date, offset } of [
   });
 }
 
-test('BroPro cron constants match configuration and obsolete morning slots are removed', () => {
+test('BroPro configuration retains the timers seen in production and shares the morning trigger', () => {
   const config = readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
   for (const cron of BROPRO_CRONS) assert.ok(config.includes(`"${cron}"`));
-  assert.equal(config.includes('"0 9,10,19,20 * * *"'), false);
-  assert.equal(config.includes('"0 8,9,14,15,17,18 * * *"'), false);
+  assert.deepEqual(BROPRO_CRONS, LIVE_BROPRO_CRONS);
+  assert.equal(config.includes('"0 9,10 * * *"'), false);
   assert.equal(getWorldNewsSlot('invalid'), null);
   assert.equal(getWorldNewsSlot('2026-07-01T08:00:00Z'), null);
 });
@@ -187,7 +194,7 @@ test('world edition uses the AI-selected story rather than the first RSS item', 
     { title: 'Local exhibition', link: WORLD_LINK },
     { title: 'International treaty', link: selectedLink }
   ]]] });
-  await state.run(time, [WORLD_NEWS_CRON_EXPRESSION]);
+  await state.runWorld(time);
   const post = state.accepted()[0].payload;
   assert.match(post.text, /international-treaty/);
   assert.match(post.text, /Источник: BBC World/);
@@ -204,7 +211,7 @@ test('world source failure falls back to the other publisher', async (t) => {
   const time = '2026-07-01T09:00:00Z';
   const state = harness(t, time, { failedFeeds: [WORLD_NEWS_SOURCES[0].url],
     feeds: [[WORLD_NEWS_SOURCES[1].url, [{ title: 'World alternative', link: 'https://www.france24.com/en/world-story' }]]] });
-  await state.run(time, [WORLD_NEWS_CRON_EXPRESSION]);
+  await state.runWorld(time);
   assert.equal(state.accepted().length, 1);
   assert.match(state.accepted()[0].payload.text, /Источник: France 24/);
 });
@@ -233,8 +240,8 @@ test('failed Rijeka AI selection does not block the world edition', async (t) =>
 test('world metadata failure keeps the publication reservation to prevent a duplicate', async (t) => {
   const time = '2026-07-01T09:00:00Z';
   const state = harness(t, time, { failWorldMetadata: true });
-  await state.run(time, [WORLD_NEWS_CRON_EXPRESSION]);
-  await state.run(time, [WORLD_NEWS_CRON_EXPRESSION]);
+  await state.runWorld(time);
+  await state.runWorld(time);
   assert.equal(state.accepted().length, 1);
   assert.equal(JSON.parse(state.kv.get('world-news:slot:2026-07-01:11')).status, 'publishing');
   assert.equal(JSON.parse(state.kv.get(worldNewsItemKey(WORLD_LINK))).status, 'publishing');
@@ -245,7 +252,7 @@ test('invalid AI selection cannot reserve or publish a world story', async (t) =
   const state = harness(t, time, {
     worldSelection: { selected: true, index: 99, headline: 'Title', summary: 'Summary' }
   });
-  await assert.rejects(state.run(time, [WORLD_NEWS_CRON_EXPRESSION]), /invalid news selection/);
+  await assert.rejects(state.runWorld(time), /invalid news selection/);
   assert.equal(state.accepted().length, 0);
   assert.equal(state.kv.size, 0);
 });
@@ -258,7 +265,7 @@ test('stale, unsafe, and already processed world stories are excluded before AI 
     { title: 'Already sent', link: `${WORLD_LINK}?tracking=rss` }
   ]]] });
   state.kv.set(worldNewsItemKey(WORLD_LINK), JSON.stringify({ status: 'published' }));
-  await state.run(time, [WORLD_NEWS_CRON_EXPRESSION]);
+  await state.runWorld(time);
   assert.equal(state.ai.length, 0);
   assert.equal(state.accepted().length, 0);
 });
@@ -290,4 +297,35 @@ test('world links, keys, and HTML formatting retain source attribution safely', 
   assert.match(post, /A &amp; B &lt;news&gt;/);
   assert.match(post, /Источник: BBC World<\/a>$/);
   assert.equal(formatWorldNewsPost(selection, { link: 'https://evil.test/story' }), null);
+});
+
+for (const { date, offset } of [
+  { date: '2026-10-06', offset: 2 }, { date: '2026-12-01', offset: 1 }
+]) {
+  test(`actual Cloudflare timers publish both morning editions on ${date}`, async (t) => {
+    const time = `${date}T${String(11 - offset).padStart(2, '0')}:00:00Z`;
+    const state = harness(t, time);
+    const utcHour = 11 - offset;
+    const crons = LIVE_BROPRO_CRONS.filter(cron => cron.split(' ')[1].split(',').map(Number).includes(utcHour));
+    await state.run(time, crons);
+    assert.deepEqual(state.accepted().map(p => p.payload.text.split(' ')[0]).sort(), ['🌊', '🌍']);
+    assert.equal(state.requests.some(url => url.includes('api.bybit.com')), false);
+    assert.equal(state.logs.filter(([message, result]) => message === 'Scheduled editorial news result' && result.reason === 'published').length, 2);
+  });
+}
+
+test('actual evening timers publish Croatia and market instead of silently returning', async (t) => {
+  const state = harness(t, '2026-10-06T17:00:00Z');
+  await state.run('2026-10-06T17:00:00Z', [LIVE_BROPRO_CRONS[1]]);
+  await state.run('2026-10-06T19:00:00Z', [LIVE_BROPRO_CRONS[0]]);
+  assert.equal(state.accepted().length, 2);
+  assert.match(state.accepted()[0].payload.text, /^🇭🇷/);
+  assert.match(state.accepted()[1].payload.caption, /^📊/);
+  assert.ok(state.logs.some(([message, result]) => message === 'Scheduled market report result' && result.reason === 'published'));
+});
+
+test('an unknown cron is an explicit failure and cannot silently report success', async (t) => {
+  const state = harness(t, '2026-10-06T09:00:00Z');
+  await assert.rejects(state.run('2026-10-06T09:00:00Z', ['0 9,10 * * *']), /Unrecognized scheduled cron/);
+  assert.equal(state.requests.length, 0);
 });

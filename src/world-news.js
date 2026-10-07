@@ -4,7 +4,6 @@ import {
   getZagrebDateTime
 } from './croatia-news.js';
 
-export const WORLD_NEWS_CRON_EXPRESSION = '0 9,10 * * *';
 export const WORLD_NEWS_SOURCES = [
   { name: 'BBC World', url: 'https://feeds.bbci.co.uk/news/world/rss.xml' },
   { name: 'France 24', url: 'https://www.france24.com/en/rss' }

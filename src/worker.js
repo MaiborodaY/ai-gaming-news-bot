@@ -23,7 +23,6 @@ import {
 } from './croatia-news.js';
 import { AI_NEWS_CRON_EXPRESSION, AI_NEWS_SOURCES, isAiNewsSlot } from './ai-news.js';
 import {
-  WORLD_NEWS_CRON_EXPRESSION,
   WORLD_NEWS_SOURCES,
   createWorldNewsTelegramOptions,
   formatWorldNewsPost,
@@ -1411,7 +1410,7 @@ async function fetchEditorialNewsCandidates(env, referenceTime, sources, maxAgeH
     .slice(0, MAX_EDITORIAL_NEWS_CANDIDATES);
 }
 
-async function runEditorialNewsPost(env, scheduledTime, { force = false, scope = 'auto' } = {}) {
+export async function runEditorialNewsPost(env, scheduledTime, { force = false, scope = 'auto' } = {}) {
   try {
     const isWorld = scope === 'world';
     const slot = force ? getCroatiaNewsTestSlot(scheduledTime)
@@ -1535,6 +1534,7 @@ async function runEditorialNewsPost(env, scheduledTime, { force = false, scope =
 
 async function runScheduledEditorialNewsPost(env, scheduledTime, options) {
   const result = await runEditorialNewsPost(env, scheduledTime, options);
+  console.info('Scheduled editorial news result', { scheduledTime, scope: result.scope || options?.scope || 'auto', reason: result.reason, ok: result.ok });
   if (!result.ok) {
     throw new Error(result.reason || 'Editorial news post failed');
   }
@@ -1618,6 +1618,7 @@ async function runMarketReport(env, scheduledTime, { force = false } = {}) {
 
 async function runScheduledMarketReport(env, scheduledTime) {
   const result = await runMarketReport(env, scheduledTime);
+  console.info('Scheduled market report result', { scheduledTime, reason: result.reason, ok: result.ok });
   if (!result.ok) {
     throw new Error(result.reason || 'Market report failed');
   }
@@ -2018,17 +2019,25 @@ export default {
     }
 
     if (event.cron === FINANCE_CRON_EXPRESSION) {
-      ctx.waitUntil(runScheduledMarketReport(env, event.scheduledTime));
+      if (getWorldNewsSlot(event.scheduledTime)) {
+        // One stable timer owns both 11:00 editions; each task can succeed independently.
+        ctx.waitUntil(runScheduledEditorialNewsPost(env, event.scheduledTime, { scope: 'rijeka' }));
+        ctx.waitUntil(runScheduledEditorialNewsPost(env, event.scheduledTime, { scope: 'world' }));
+      } else {
+        ctx.waitUntil(runScheduledMarketReport(env, event.scheduledTime));
+      }
       return;
     }
 
     if (event.cron === CROATIA_NEWS_CRON_EXPRESSION) {
-      ctx.waitUntil(runScheduledEditorialNewsPost(env, event.scheduledTime));
+      if (getWorldNewsSlot(event.scheduledTime)) {
+        console.info('Scheduled editorial news skipped', { reason: 'morning_owned_by_shared_timer', scheduledTime: event.scheduledTime });
+      } else {
+        ctx.waitUntil(runScheduledEditorialNewsPost(env, event.scheduledTime));
+      }
       return;
     }
 
-    if (event.cron === WORLD_NEWS_CRON_EXPRESSION) {
-      ctx.waitUntil(runScheduledEditorialNewsPost(env, event.scheduledTime, { scope: 'world' }));
-    }
+    throw new Error(`Unrecognized scheduled cron: ${event.cron}`);
   }
 };

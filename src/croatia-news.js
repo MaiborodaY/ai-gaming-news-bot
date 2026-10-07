@@ -1,4 +1,5 @@
-export const CROATIA_NEWS_CRON_EXPRESSION = '0 9,10,14,15,17,18 * * *';
+// Keep the existing timer stable; the shared morning timer owns the 11:00 edition.
+export const CROATIA_NEWS_CRON_EXPRESSION = '0 8,9,14,15,17,18 * * *';
 
 const CROATIA_NEWS_HOURS = new Set([11, 16, 19]);
 const RIJEKA_NEWS_HOURS = new Set([11, 16]);
