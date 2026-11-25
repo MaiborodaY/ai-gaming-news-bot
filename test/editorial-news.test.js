@@ -107,6 +107,15 @@ function harness(t, referenceTime, options = {}) {
       ]);
       return Response.json({ retCode: 0, result: { list: candles } });
     }
+    if (url.startsWith('https://api.kraken.com/0/public/')) {
+      const parsed = new URL(url);
+      const market = parsed.pathname.endsWith('/Ticker')
+        ? { c: ['82.5', '1'] }
+        : Array.from({ length: 169 }, (_, index) => [
+          Date.parse(referenceTime) / 1000 - index * 3600, '80', '90', '80', '82', '82', '1', 1
+        ]);
+      return Response.json({ error: [], result: { 'ANTx/USD': market } });
+    }
     assert.fail(`Unexpected request: ${url}`);
   });
 
@@ -201,10 +210,17 @@ test('world edition uses the AI-selected story rather than the first RSS item', 
   assert.equal(post.parse_mode, 'HTML');
   assert.equal(post.link_preview_options.prefer_large_media, true);
   assert.equal(post.link_preview_options.show_above_text, true);
-  assert.equal(state.ai[0].body.response_format.json_schema.schema.properties.index.minimum, 1);
-  assert.deepEqual(state.ai[0].body.response_format.json_schema.schema.properties.selected.enum, [true]);
-  assert.match(state.ai[0].body.messages[0].content, /без ограничения тематики/);
-  assert.match(state.ai[0].body.messages[0].content, /международную значимость/);
+  const [{ body }] = state.ai;
+  assert.equal(body.model, 'gpt-6-luna');
+  assert.equal(body.reasoning_effort, 'none');
+  assert.equal(body.max_completion_tokens, 300);
+  assert.equal(Object.hasOwn(body, 'max_tokens'), false);
+  assert.equal(body.response_format.type, 'json_schema');
+  assert.equal(body.response_format.json_schema.strict, true);
+  assert.equal(body.response_format.json_schema.schema.properties.index.minimum, 1);
+  assert.deepEqual(body.response_format.json_schema.schema.properties.selected.enum, [true]);
+  assert.match(body.messages[0].content, /без ограничения тематики/);
+  assert.match(body.messages[0].content, /международную значимость/);
 });
 
 test('world source failure falls back to the other publisher', async (t) => {
@@ -320,7 +336,15 @@ test('actual evening timers publish Croatia and market instead of silently retur
   await state.run('2026-10-06T19:00:00Z', [LIVE_BROPRO_CRONS[0]]);
   assert.equal(state.accepted().length, 2);
   assert.match(state.accepted()[0].payload.text, /^🇭🇷/);
-  assert.match(state.accepted()[1].payload.caption, /^📊/);
+  const marketPost = state.accepted()[1];
+  assert.equal(marketPost.method, 'sendPhoto');
+  assert.match(marketPost.payload.caption, /^📊/);
+  assert.match(marketPost.payload.caption, /Anthropic xStock \(ANTx\) — \$82\.50/);
+  assert.match(marketPost.payload.caption, /NVIDIA xStock \(NVDAx\)/);
+  assert.match(marketPost.payload.caption, /Alphabet xStock \(GOOGLx\)/);
+  assert.match(marketPost.payload.caption, /Не является инвестиционной рекомендацией\.$/);
+  const chart = JSON.parse(new URL(marketPost.payload.photo).searchParams.get('c'));
+  assert.deepEqual(chart.data.labels, ['TON', 'BTC', 'SPCXx', 'ANTx', 'NVDAx', 'GOOGLx']);
   assert.ok(state.logs.some(([message, result]) => message === 'Scheduled market report result' && result.reason === 'published'));
 });
 

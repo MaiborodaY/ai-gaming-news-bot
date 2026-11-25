@@ -1,13 +1,19 @@
+import { fetchAnthropicXStock } from './market-kraken.js';
+
 // Reuse the existing morning/evening timer; publication hours are checked in the worker.
 export const FINANCE_CRON_EXPRESSION = '0 9,10,19,20 * * *';
 
 const BYBIT_API_BASE_URL = 'https://api.bybit.com/v5/market';
-const BYBIT_ASSETS = [
+const MARKET_ASSETS = [
   { id: 'the-open-network', name: 'TON', symbol: 'TON', pair: 'GRAMUSDT' },
   { id: 'bitcoin', name: 'Bitcoin', symbol: 'BTC', pair: 'BTCUSDT' },
-  { id: 'spcxx', name: 'SpaceX xStock', symbol: 'SPCXx', pair: 'SPCXXUSDT' }
+  { id: 'spcxx', name: 'SpaceX xStock', symbol: 'SPCXx', pair: 'SPCXXUSDT' },
+  { symbol: 'ANTx', fetchQuote: fetchAnthropicXStock },
+  { id: 'nvdax', name: 'NVIDIA xStock', symbol: 'NVDAx', pair: 'NVDAXUSDT' },
+  { id: 'googlx', name: 'Alphabet xStock', symbol: 'GOOGLx', pair: 'GOOGLXUSDT' }
 ];
 const BYBIT_KLINE_LIMIT = 169;
+const MARKET_ASSETS_PER_BATCH = 3;
 const HOUR_MS = 60 * 60 * 1000;
 const REPORT_HOURS = new Set([21]);
 const ZAGREB_TIME_ZONE = 'Europe/Zagreb';
@@ -86,6 +92,7 @@ async function fetchBybitJson(path, params, fetchImpl) {
 
   // These endpoints expose public market data and do not require credentials.
   const response = await fetchImpl(url.toString(), {
+    signal: AbortSignal.timeout(8000),
     headers: {
       accept: 'application/json',
       'user-agent': 'BroNewsBot/0.1 (+https://t.me/BroNews_bot)'
@@ -113,7 +120,7 @@ function percentageChange(current, previous) {
 }
 
 async function fetchBybitAsset(asset, fetchImpl) {
-  const [tickerResponse, klineResponse] = await Promise.all([
+  const [tickerResponse, klineResponse] = await Promise.allSettled([
     fetchBybitJson('tickers', { category: 'spot', symbol: asset.pair }, fetchImpl),
     fetchBybitJson(
       'kline',
@@ -122,13 +129,20 @@ async function fetchBybitAsset(asset, fetchImpl) {
     )
   ]);
 
-  const ticker = tickerResponse?.result?.list?.[0];
+  if (tickerResponse.status === 'rejected') {
+    throw tickerResponse.reason;
+  }
+  if (klineResponse.status === 'rejected') {
+    throw klineResponse.reason;
+  }
+
+  const ticker = tickerResponse.value?.result?.list?.[0];
   const price = asFiniteNumber(ticker?.lastPrice);
   if (price === null) {
     throw new Error(`Bybit response is missing ${asset.symbol} price`);
   }
 
-  const candles = klineResponse?.result?.list;
+  const candles = klineResponse.value?.result?.list;
   if (!Array.isArray(candles) || candles.length === 0) {
     throw new Error(`Bybit response is missing ${asset.symbol} candles`);
   }
@@ -154,9 +168,35 @@ async function fetchBybitAsset(asset, fetchImpl) {
 }
 
 export async function fetchMarketSnapshot(fetchImpl = fetch) {
+  const assets = [];
+  const unavailableAssets = [];
+  let firstError;
+
+  // Workers allow six simultaneous outgoing connections, and each quote uses two requests.
+  for (let start = 0; start < MARKET_ASSETS.length; start += MARKET_ASSETS_PER_BATCH) {
+    const batch = MARKET_ASSETS.slice(start, start + MARKET_ASSETS_PER_BATCH);
+    const quotes = await Promise.allSettled(batch.map((asset) =>
+      asset.fetchQuote ? asset.fetchQuote(fetchImpl) : fetchBybitAsset(asset, fetchImpl)
+    ));
+
+    for (const [index, quote] of quotes.entries()) {
+      if (quote.status === 'fulfilled') {
+        assets.push(quote.value);
+      } else {
+        firstError ??= quote.reason;
+        unavailableAssets.push(batch[index].symbol);
+      }
+    }
+  }
+
+  if (assets.length === 0) {
+    throw firstError ?? new Error('No market quotes available');
+  }
+
   return {
     generatedAt: new Date().toISOString(),
-    assets: await Promise.all(BYBIT_ASSETS.map((asset) => fetchBybitAsset(asset, fetchImpl)))
+    assets,
+    ...(unavailableAssets.length ? { unavailableAssets } : {})
   };
 }
 
@@ -281,7 +321,7 @@ function getTrendText(trend, asset) {
 
 export function buildMarketChartUrl(snapshot) {
   const values = snapshot.assets.map((asset) =>
-    Number.isFinite(asset.change24h) ? Number(asset.change24h.toFixed(2)) : 0
+    Number.isFinite(asset.change24h) ? Number(asset.change24h.toFixed(2)) : null
   );
   const chart = {
     type: 'bar',
@@ -290,7 +330,7 @@ export function buildMarketChartUrl(snapshot) {
       datasets: [
         {
           data: values,
-          backgroundColor: values.map((value) => (value >= 0 ? '#22c55e' : '#ef4444')),
+          backgroundColor: values.map((value) => value === null ? '#9ca3af' : value >= 0 ? '#22c55e' : '#ef4444'),
           borderWidth: 0,
           borderRadius: 8
         }
@@ -330,14 +370,23 @@ export function buildMarketChartUrl(snapshot) {
   return url.toString();
 }
 
-export function formatMarketReport(snapshot, previousSnapshot, slot) {
+export function formatMarketReport(snapshot, previousSnapshot, slot, { compact = false } = {}) {
   const assetEmojis = {
     'the-open-network': '💎',
     bitcoin: '₿',
-    spcxx: '🚀'
+    spcxx: '🚀',
+    antx: '🤖',
+    nvdax: '🎮',
+    googlx: '🔎'
+  };
+  const compactOutlooks = {
+    positive: 'возможен рост',
+    negative: 'возможно снижение',
+    neutral: 'нет явного направления'
   };
   const assetBlocks = snapshot.assets.map((asset) => {
-    const trendText = getTrendText(classifyMarketTrend(asset), asset);
+    const trend = classifyMarketTrend(asset);
+    const trendText = getTrendText(trend, asset);
     const sincePrevious = getChangeSincePrevious(asset, previousSnapshot);
     const displayName = asset.symbol === asset.name ? asset.name : `${asset.name} (${asset.symbol})`;
     const changes = [
@@ -350,13 +399,14 @@ export function formatMarketReport(snapshot, previousSnapshot, slot) {
       `${assetEmojis[asset.id] || '📌'} ${displayName} — ${formatUsd(asset.price)}`,
       changes.join(' • '),
       `С прошлого выпуска: ${formatPercent(sincePrevious)}`,
-      `${trendText.icon} Прогноз: ${trendText.outlook}`
+      `${trendText.icon} Прогноз: ${compact ? compactOutlooks[trend] : trendText.outlook}`
     ].join('\n');
   });
 
   return [
     `📊 Рынок • ${slot.label} (Хорватия)`,
     ...assetBlocks,
+    ...(snapshot.unavailableAssets?.length ? [`Нет котировок: ${snapshot.unavailableAssets.join(', ')}.`] : []),
     '⚠️ Не является инвестиционной рекомендацией.'
   ].join('\n\n');
 }

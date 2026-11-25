@@ -11,16 +11,22 @@ import {
   marketReportKey
 } from '../src/market.js';
 
-test('fetchMarketSnapshot maps public Bybit ticker and candle responses without credentials', async () => {
+test('fetchMarketSnapshot maps public Bybit and Kraken prices without credentials', async () => {
   const requests = [];
   const prices = {
     GRAMUSDT: 3.5,
     BTCUSDT: 64000,
-    SPCXXUSDT: 150.16
+    SPCXXUSDT: 150.16,
+    NVDAXUSDT: 148.25,
+    GOOGLXUSDT: 268.75
   };
   const fetchImpl = async (url, options) => {
     requests.push({ url, options });
     const parsedUrl = new URL(url);
+    if (parsedUrl.hostname === 'api.kraken.com') {
+      const market = parsedUrl.pathname.endsWith('/Ticker') ? { c: ['82.5', '1'] } : [];
+      return Response.json({ error: [], result: { 'ANTx/USD': market } });
+    }
     const pair = parsedUrl.searchParams.get('symbol');
     const price = prices[pair];
 
@@ -65,15 +71,29 @@ test('fetchMarketSnapshot maps public Bybit ticker and candle responses without 
     [
       ['the-open-network', 3.5],
       ['bitcoin', 64000],
-      ['spcxx', 150.16]
+      ['spcxx', 150.16],
+      ['antx', 82.5],
+      ['nvdax', 148.25],
+      ['googlx', 268.75]
     ]
   );
   assert.equal(snapshot.assets[0].change24h, 1.2);
   assert.ok(Math.abs(snapshot.assets[0].change1h - 1) < 0.001);
   assert.ok(Math.abs(snapshot.assets[0].change7d - 7) < 0.001);
-  assert.equal(requests.length, 6);
+  assert.equal(requests.length, 12);
+  assert.ok(requests.some(({ url }) => new URL(url).searchParams.get('symbol') === 'NVDAXUSDT'));
+  assert.ok(requests.some(({ url }) => new URL(url).searchParams.get('symbol') === 'GOOGLXUSDT'));
   assert.equal(requests.every(({ options }) => !options.headers.authorization), true);
   assert.equal(requests.every(({ options }) => !options.headers['x-api-key']), true);
+
+  const partial = await fetchMarketSnapshot((url, options) =>
+    new URL(url).hostname === 'api.kraken.com'
+      ? new Response(null, { status: 503 })
+      : fetchImpl(url, options)
+  );
+  assert.deepEqual(partial.unavailableAssets, ['ANTx']);
+  assert.deepEqual(partial.assets.map((asset) => asset.id), ['the-open-network', 'bitcoin', 'spcxx', 'nvdax', 'googlx']);
+  assert.match(formatMarketReport(partial, null, { label: '21:00' }), /Нет котировок: ANTx/);
 });
 
 test('getMarketReportSlot follows Zagreb summer and winter time', () => {
@@ -189,6 +209,6 @@ test('buildMarketChartUrl creates a public chart without credentials', () => {
   assert.equal(url.searchParams.get('format'), 'png');
   assert.equal(url.searchParams.has('key'), false);
   assert.deepEqual(chart.data.labels, ['TON', 'BTC', 'SPCXx']);
-  assert.deepEqual(chart.data.datasets[0].data, [2.47, -1.23, 0]);
-  assert.deepEqual(chart.data.datasets[0].backgroundColor, ['#22c55e', '#ef4444', '#22c55e']);
+  assert.deepEqual(chart.data.datasets[0].data, [2.47, -1.23, null]);
+  assert.deepEqual(chart.data.datasets[0].backgroundColor, ['#22c55e', '#ef4444', '#9ca3af']);
 });
