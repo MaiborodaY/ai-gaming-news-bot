@@ -52,6 +52,7 @@ function harness(t, referenceTime, options = {}) {
   const env = {
     CHANNEL_ID: '@BroNewsWorld', FINANCE_CHANNEL_ID: '@BroProNews',
     TELEGRAM_BOT_TOKEN: 'test-token', OPENAI_API_KEY: 'test-key',
+    ...(options.marketPortfolio ? { MARKET_PORTFOLIO: JSON.stringify(options.marketPortfolio) } : {}),
     DRAFTS: {
       async get(key) { return kv.get(key) ?? null; },
       async put(key, value) {
@@ -342,10 +343,35 @@ test('actual evening timers publish Croatia and market instead of silently retur
   assert.match(marketPost.payload.caption, /Anthropic xStock \(ANTx\) — \$82\.50/);
   assert.match(marketPost.payload.caption, /NVIDIA xStock \(NVDAx\)/);
   assert.match(marketPost.payload.caption, /Alphabet xStock \(GOOGLx\)/);
-  assert.match(marketPost.payload.caption, /Не является инвестиционной рекомендацией\.$/);
+  assert.match(marketPost.payload.caption, /^📊 Рынок\n\nЕсли бы вы купили 100 биткойнов/);
+  assert.doesNotMatch(marketPost.payload.caption, /рекомендаци|Прогноз|Хорватия|Изменение портфеля/);
   const chart = JSON.parse(new URL(marketPost.payload.photo).searchParams.get('c'));
-  assert.deepEqual(chart.data.labels, ['TON', 'BTC', 'SPCXx', 'ANTx', 'NVDAx', 'GOOGLx']);
+  assert.deepEqual(chart.data.labels, ['TON', 'BTC', 'SPCXx', 'ANTx', 'NVDAx', 'GOOGLx', 'XAUT']);
   assert.ok(state.logs.some(([message, result]) => message === 'Scheduled market report result' && result.reason === 'published'));
+});
+
+test('the evening market chart keeps the configured portfolio changes at the end of the caption', async (t) => {
+  const time = '2026-11-26T20:00:00Z';
+  const state = harness(t, time, { marketPortfolio: { spcxx: 1, nvdax: 2, antx: 3, googlx: 0.5, xaut: 0.01 } });
+  state.kv.set('market:latest', JSON.stringify({
+    assets: [
+      { id: 'spcxx', price: 90 }, { id: 'nvdax', price: 101 },
+      { id: 'antx', price: 80 }, { id: 'googlx', price: 100 }, { id: 'xaut', price: 90 }
+    ]
+  }));
+
+  await state.run(time, [LIVE_BROPRO_CRONS[0]]);
+
+  const [post] = state.accepted();
+  assert.equal(post.method, 'sendPhoto');
+  assert.ok(post.payload.caption.length <= 1000);
+  assert.match(post.payload.caption, /Если бы вы купили 100 биткойнов в 2010 году, то сейчас у вас было бы \$10,000\.00/);
+  assert.match(post.payload.caption, /Изменение портфеля \(примерно\)\nС прошлого выпуска: \+\$15\.60\n1 ч: \+\$1\.50 • 24 ч: \+\$10\.98 • 7 дн\.: \+\$7\.50$/);
+  const chart = JSON.parse(new URL(post.payload.photo).searchParams.get('c'));
+  assert.ok(chart.data.labels.includes('XAUT'));
+  const savedSnapshot = JSON.parse(state.kv.get('market:latest'));
+  assert.ok(savedSnapshot.assets.some((asset) => asset.id === 'xaut'));
+  assert.deepEqual(Object.keys(savedSnapshot).sort(), ['assets', 'generatedAt']);
 });
 
 test('an unknown cron is an explicit failure and cannot silently report success', async (t) => {

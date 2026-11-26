@@ -10,7 +10,8 @@ const MARKET_ASSETS = [
   { id: 'spcxx', name: 'SpaceX xStock', symbol: 'SPCXx', pair: 'SPCXXUSDT' },
   { symbol: 'ANTx', fetchQuote: fetchAnthropicXStock },
   { id: 'nvdax', name: 'NVIDIA xStock', symbol: 'NVDAx', pair: 'NVDAXUSDT' },
-  { id: 'googlx', name: 'Alphabet xStock', symbol: 'GOOGLx', pair: 'GOOGLXUSDT' }
+  { id: 'googlx', name: 'Alphabet xStock', symbol: 'GOOGLx', pair: 'GOOGLXUSDT' },
+  { id: 'xaut', name: 'Tether Gold', symbol: 'XAUT', pair: 'XAUTUSDT' }
 ];
 const BYBIT_KLINE_LIMIT = 169;
 const MARKET_ASSETS_PER_BATCH = 3;
@@ -138,7 +139,7 @@ async function fetchBybitAsset(asset, fetchImpl) {
 
   const ticker = tickerResponse.value?.result?.list?.[0];
   const price = asFiniteNumber(ticker?.lastPrice);
-  if (price === null) {
+  if (price === null || price <= 0) {
     throw new Error(`Bybit response is missing ${asset.symbol} price`);
   }
 
@@ -225,98 +226,28 @@ function getChangeSincePrevious(asset, previousSnapshot) {
   return ((asset.price - previousPrice) / previousPrice) * 100;
 }
 
-export function classifyMarketTrend(asset) {
-  const weightedChanges = [
-    [asFiniteNumber(asset.change1h), 0.4],
-    [asFiniteNumber(asset.change24h), 0.45],
-    [asFiniteNumber(asset.change7d), 0.15]
-  ].filter(([value]) => value !== null);
+function formatMarketObservation(asset) {
+  const reading = [
+    ['сутки', asset.change24h],
+    ['неделю', asset.change7d],
+    ['час', asset.change1h]
+  ].find(([, change]) => Number.isFinite(change));
 
-  if (weightedChanges.length === 0) {
-    return 'neutral';
+  if (!reading) {
+    return 'нет данных';
   }
 
-  const totalWeight = weightedChanges.reduce((sum, [, weight]) => sum + weight, 0);
-  const score = weightedChanges.reduce((sum, [value, weight]) => sum + value * weight, 0) / totalWeight;
-
-  if (score >= 0.75) {
-    return 'positive';
+  const [period, change] = reading;
+  if (Math.abs(change) < 0.005) {
+    return `без изменений за ${period}`;
   }
-
-  if (score <= -0.75) {
-    return 'negative';
-  }
-
-  return 'neutral';
+  return `${change > 0 ? 'рост' : 'снижение'} за ${period}`;
 }
 
-function getTrendText(trend, asset) {
-  const change24h = asFiniteNumber(asset.change24h);
-  const change7d = asFiniteNumber(asset.change7d);
-
-  if (trend === 'positive') {
-    if (change24h > 0 && change7d < 0) {
-      return {
-        icon: '📈',
-        outlook:
-          'За сутки цена выросла, но недельный минус ещё не отыгран. Рост может продолжиться, хотя пока выглядит неуверенно.'
-      };
-    }
-
-    if (change24h >= 3) {
-      return {
-        icon: '📈',
-        outlook:
-          'За сутки цена заметно выросла. Рост может продолжиться, но после быстрого подъёма возможна небольшая пауза.'
-      };
-    }
-
-    return {
-      icon: '📈',
-      outlook: 'Цена постепенно растёт. Если интерес не ослабнет, движение вверх может продолжиться.'
-    };
-  }
-
-  if (trend === 'negative') {
-    if (change24h > 0 && change7d < 0) {
-      return {
-        icon: '📉',
-        outlook:
-          'За сутки цена немного восстановилась, но недельное падение всё ещё сильное. Пока снижение остаётся более вероятным.'
-      };
-    }
-
-    if (change24h <= -3) {
-      return {
-        icon: '📉',
-        outlook: 'За сутки цена заметно снизилась. Без улучшения ситуации падение может продолжиться.'
-      };
-    }
-
-    return {
-      icon: '📉',
-      outlook: 'Цена движется вниз. Пока заметных признаков роста нет, поэтому снижение остаётся более вероятным.'
-    };
-  }
-
-  if (change24h > 0 && change7d < 0) {
-    return {
-      icon: '↔️',
-      outlook: 'За сутки цена выросла, но за неделю всё ещё в минусе. Пока явного направления нет.'
-    };
-  }
-
-  if (change24h < 0 && change7d > 0) {
-    return {
-      icon: '↔️',
-      outlook: 'За сутки цена снизилась, но недельный результат остаётся положительным. Пока явного направления нет.'
-    };
-  }
-
-  return {
-    icon: '↔️',
-    outlook: 'Цена колеблется без явного направления. Вероятнее небольшие движения около текущего уровня.'
-  };
+function formatSignedUsd(value) {
+  return Number.isFinite(value)
+    ? value.toLocaleString('en-US', { style: 'currency', currency: 'USD', signDisplay: 'exceptZero' })
+    : 'нет данных';
 }
 
 export function buildMarketChartUrl(snapshot) {
@@ -370,7 +301,7 @@ export function buildMarketChartUrl(snapshot) {
   return url.toString();
 }
 
-export function formatMarketReport(snapshot, previousSnapshot, slot, { compact = false } = {}) {
+export function formatMarketReport(snapshot, previousSnapshot, { compact = false, portfolioChanges } = {}) {
   const assetEmojis = {
     'the-open-network': '💎',
     bitcoin: '₿',
@@ -379,34 +310,40 @@ export function formatMarketReport(snapshot, previousSnapshot, slot, { compact =
     nvdax: '🎮',
     googlx: '🔎'
   };
-  const compactOutlooks = {
-    positive: 'возможен рост',
-    negative: 'возможно снижение',
-    neutral: 'нет явного направления'
-  };
-  const assetBlocks = snapshot.assets.map((asset) => {
-    const trend = classifyMarketTrend(asset);
-    const trendText = getTrendText(trend, asset);
+  const bitcoin = snapshot.assets.find((asset) => asset.id === 'bitcoin');
+  const bitcoinIntro = bitcoin
+    ? `Если бы вы купили 100 биткойнов в 2010 году, то сейчас у вас было бы ${formatUsd(bitcoin.price * 100)}.`
+    : '';
+  const assetBlocks = snapshot.assets.filter((asset) => asset.id !== 'xaut').map((asset) => {
     const sincePrevious = getChangeSincePrevious(asset, previousSnapshot);
-    const displayName = asset.symbol === asset.name ? asset.name : `${asset.name} (${asset.symbol})`;
+    const name = compact ? asset.name.replace(/ xStock$/, '') : asset.name;
+    const displayName = asset.symbol === name ? name : `${name} (${asset.symbol})`;
     const changes = [
       Number.isFinite(asset.change1h) ? `1 ч: ${formatPercent(asset.change1h)}` : null,
       `24 ч: ${formatPercent(asset.change24h)}`,
-      Number.isFinite(asset.change7d) ? `7 дн.: ${formatPercent(asset.change7d)}` : null
+      Number.isFinite(asset.change7d) ? `7 дн.: ${formatPercent(asset.change7d)}` : null,
+      compact ? `с выпуска: ${formatPercent(sincePrevious)}` : null
     ].filter(Boolean);
 
     return [
       `${assetEmojis[asset.id] || '📌'} ${displayName} — ${formatUsd(asset.price)}`,
       changes.join(' • '),
-      `С прошлого выпуска: ${formatPercent(sincePrevious)}`,
-      `${trendText.icon} Прогноз: ${compact ? compactOutlooks[trend] : trendText.outlook}`
-    ].join('\n');
+      compact ? null : `С прошлого выпуска: ${formatPercent(sincePrevious)}`,
+      `Наблюдение: ${formatMarketObservation(asset)}`
+    ].filter(Boolean).join('\n');
   });
 
+  const portfolioBlock = portfolioChanges ? [
+    '💼 Изменение портфеля (примерно)',
+    `С прошлого выпуска: ${formatSignedUsd(portfolioChanges.sincePrevious)}`,
+    `1 ч: ${formatSignedUsd(portfolioChanges.change1h)} • 24 ч: ${formatSignedUsd(portfolioChanges.change24h)} • 7 дн.: ${formatSignedUsd(portfolioChanges.change7d)}`
+  ].join('\n') : '';
+
   return [
-    `📊 Рынок • ${slot.label} (Хорватия)`,
+    '📊 Рынок',
+    bitcoinIntro,
     ...assetBlocks,
     ...(snapshot.unavailableAssets?.length ? [`Нет котировок: ${snapshot.unavailableAssets.join(', ')}.`] : []),
-    '⚠️ Не является инвестиционной рекомендацией.'
-  ].join('\n\n');
+    portfolioBlock
+  ].filter(Boolean).join('\n\n');
 }

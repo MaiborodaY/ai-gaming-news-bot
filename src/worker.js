@@ -7,6 +7,7 @@ import {
   getMarketTestSlot,
   marketReportKey
 } from './market.js';
+import { calculatePortfolioChanges } from './market-portfolio.js';
 import {
   CROATIA_NEWS_CRON_EXPRESSION,
   cleanCroatiaFeedText,
@@ -1670,9 +1671,10 @@ async function runMarketReport(env, scheduledTime, { force = false } = {}) {
     }
 
     const snapshot = await fetchMarketSnapshot();
-    const report = formatMarketReport(snapshot, previousSnapshot, slot);
+    const portfolioChanges = calculatePortfolioChanges(snapshot, previousSnapshot, env.MARKET_PORTFOLIO);
+    const report = formatMarketReport(snapshot, previousSnapshot, { portfolioChanges });
     const caption = report.length <= TELEGRAM_PHOTO_CAPTION_LIMIT
-      ? report : formatMarketReport(snapshot, previousSnapshot, slot, { compact: true });
+      ? report : formatMarketReport(snapshot, previousSnapshot, { compact: true, portfolioChanges });
     let imageMode = 'text';
     let imageError = null;
 
