@@ -1,17 +1,17 @@
-import { fetchAnthropicXStock } from './market-kraken.js';
+import { fetchKrakenAsset } from './market-kraken.js';
 
 // Reuse the existing morning/evening timer; publication hours are checked in the worker.
 export const FINANCE_CRON_EXPRESSION = '0 9,10,19,20 * * *';
 
 const BYBIT_API_BASE_URL = 'https://api.bybit.com/v5/market';
 const MARKET_ASSETS = [
-  { id: 'the-open-network', name: 'TON', symbol: 'TON', pair: 'GRAMUSDT' },
-  { id: 'bitcoin', name: 'Bitcoin', symbol: 'BTC', pair: 'BTCUSDT' },
-  { id: 'spcxx', name: 'SpaceX xStock', symbol: 'SPCXx', pair: 'SPCXXUSDT' },
-  { symbol: 'ANTx', fetchQuote: fetchAnthropicXStock },
-  { id: 'nvdax', name: 'NVIDIA xStock', symbol: 'NVDAx', pair: 'NVDAXUSDT' },
-  { id: 'googlx', name: 'Alphabet xStock', symbol: 'GOOGLx', pair: 'GOOGLXUSDT' },
-  { id: 'xaut', name: 'Tether Gold', symbol: 'XAUT', pair: 'XAUTUSDT' }
+  { id: 'the-open-network', name: 'TON', symbol: 'TON', bybitPair: 'GRAMUSDT', krakenPair: 'TON/USD' },
+  { id: 'bitcoin', name: 'Bitcoin', symbol: 'BTC', bybitPair: 'BTCUSDT', krakenPair: 'BTC/USD' },
+  { id: 'spcxx', name: 'SpaceX xStock', symbol: 'SPCXx', bybitPair: 'SPCXXUSDT', krakenPair: 'SPCXx/USD', tokenized: true },
+  { id: 'antx', name: 'Anthropic xStock', symbol: 'ANTx', krakenPair: 'ANTx/USD', tokenized: true },
+  { id: 'nvdax', name: 'NVIDIA xStock', symbol: 'NVDAx', bybitPair: 'NVDAXUSDT', krakenPair: 'NVDAx/USD', tokenized: true },
+  { id: 'googlx', name: 'Alphabet xStock', symbol: 'GOOGLx', bybitPair: 'GOOGLXUSDT', krakenPair: 'GOOGLx/USD', tokenized: true },
+  { id: 'xaut', name: 'Tether Gold', symbol: 'XAUT', bybitPair: 'XAUTUSDT', krakenPair: 'XAUT/USD' }
 ];
 const BYBIT_KLINE_LIMIT = 169;
 const MARKET_ASSETS_PER_BATCH = 3;
@@ -100,8 +100,8 @@ async function fetchBybitJson(path, params, fetchImpl) {
     }
   });
   if (!response.ok) {
-    const body = (await response.text()).trim().replace(/\s+/g, ' ').slice(0, 300);
-    throw new Error(`Bybit API error: ${response.status}${body ? ` ${body}` : ''}`);
+    await response.body?.cancel();
+    throw new Error(`Bybit ${path} API error: HTTP ${response.status}`);
   }
 
   const data = await response.json();
@@ -122,10 +122,10 @@ function percentageChange(current, previous) {
 
 async function fetchBybitAsset(asset, fetchImpl) {
   const [tickerResponse, klineResponse] = await Promise.allSettled([
-    fetchBybitJson('tickers', { category: 'spot', symbol: asset.pair }, fetchImpl),
+    fetchBybitJson('tickers', { category: 'spot', symbol: asset.bybitPair }, fetchImpl),
     fetchBybitJson(
       'kline',
-      { category: 'spot', symbol: asset.pair, interval: '60', limit: BYBIT_KLINE_LIMIT },
+      { category: 'spot', symbol: asset.bybitPair, interval: '60', limit: BYBIT_KLINE_LIMIT },
       fetchImpl
     )
   ]);
@@ -133,20 +133,14 @@ async function fetchBybitAsset(asset, fetchImpl) {
   if (tickerResponse.status === 'rejected') {
     throw tickerResponse.reason;
   }
-  if (klineResponse.status === 'rejected') {
-    throw klineResponse.reason;
-  }
-
   const ticker = tickerResponse.value?.result?.list?.[0];
   const price = asFiniteNumber(ticker?.lastPrice);
   if (price === null || price <= 0) {
     throw new Error(`Bybit response is missing ${asset.symbol} price`);
   }
 
-  const candles = klineResponse.value?.result?.list;
-  if (!Array.isArray(candles) || candles.length === 0) {
-    throw new Error(`Bybit response is missing ${asset.symbol} candles`);
-  }
+  const history = klineResponse.status === 'fulfilled' ? klineResponse.value?.result?.list : null;
+  const candles = Array.isArray(history) ? history : [];
 
   const previousHourClose = asFiniteNumber(candles[1]?.[4]);
   const newestCandleTime = asFiniteNumber(candles[0]?.[0]);
@@ -168,6 +162,17 @@ async function fetchBybitAsset(asset, fetchImpl) {
   };
 }
 
+async function fetchMarketAsset(asset, fetchImpl) {
+  if (asset.bybitPair) {
+    try {
+      return await fetchBybitAsset(asset, fetchImpl);
+    } catch (error) {
+      console.warn('Bybit quote unavailable, using Kraken', { symbol: asset.symbol, reason: error.message });
+    }
+  }
+  return fetchKrakenAsset(asset, fetchImpl);
+}
+
 export async function fetchMarketSnapshot(fetchImpl = fetch) {
   const assets = [];
   const unavailableAssets = [];
@@ -176,16 +181,16 @@ export async function fetchMarketSnapshot(fetchImpl = fetch) {
   // Workers allow six simultaneous outgoing connections, and each quote uses two requests.
   for (let start = 0; start < MARKET_ASSETS.length; start += MARKET_ASSETS_PER_BATCH) {
     const batch = MARKET_ASSETS.slice(start, start + MARKET_ASSETS_PER_BATCH);
-    const quotes = await Promise.allSettled(batch.map((asset) =>
-      asset.fetchQuote ? asset.fetchQuote(fetchImpl) : fetchBybitAsset(asset, fetchImpl)
-    ));
+    const quotes = await Promise.allSettled(batch.map((asset) => fetchMarketAsset(asset, fetchImpl)));
 
     for (const [index, quote] of quotes.entries()) {
       if (quote.status === 'fulfilled') {
         assets.push(quote.value);
       } else {
         firstError ??= quote.reason;
-        unavailableAssets.push(batch[index].symbol);
+        const symbol = batch[index].symbol;
+        unavailableAssets.push(symbol);
+        console.warn('Market quote unavailable', { symbol, reason: quote.reason?.message });
       }
     }
   }
@@ -340,7 +345,7 @@ export function formatMarketReport(snapshot, previousSnapshot, { compact = false
   ].join('\n') : '';
 
   return [
-    '📊 Рынок',
+    snapshot.unavailableAssets?.length ? '📊 Рынок · неполные данные' : '📊 Рынок',
     bitcoinIntro,
     ...assetBlocks,
     ...(snapshot.unavailableAssets?.length ? [`Нет котировок: ${snapshot.unavailableAssets.join(', ')}.`] : []),

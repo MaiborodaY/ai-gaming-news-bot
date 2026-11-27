@@ -1,13 +1,12 @@
 const KRAKEN_MARKET_URL = 'https://api.kraken.com/0/public';
-const ANTHROPIC_PAIR = 'ANTx/USD';
 const HOUR_SECONDS = 60 * 60;
 const WEEK_HOURS = 7 * 24;
 
-async function fetchKrakenPair(endpoint, params, fetchImpl) {
+async function fetchKrakenPair(endpoint, asset, params, fetchImpl) {
   const url = new URL(KRAKEN_MARKET_URL + '/' + endpoint);
   url.search = new URLSearchParams({
-    pair: ANTHROPIC_PAIR,
-    asset_class: 'tokenized_asset',
+    pair: asset.krakenPair,
+    ...(asset.tokenized ? { asset_class: 'tokenized_asset' } : {}),
     assetVersion: '1',
     ...params
   }).toString();
@@ -17,6 +16,7 @@ async function fetchKrakenPair(endpoint, params, fetchImpl) {
     signal: AbortSignal.timeout(8000)
   });
   if (!response.ok) {
+    await response.body?.cancel();
     throw new Error('Kraken ' + endpoint + ' API error: HTTP ' + response.status);
   }
 
@@ -26,7 +26,8 @@ async function fetchKrakenPair(endpoint, params, fetchImpl) {
     throw new Error('Kraken ' + endpoint + ' API error: ' + reason);
   }
 
-  const pair = Object.keys(data.result).find((key) => key.replace('/', '').toUpperCase() === 'ANTXUSD');
+  const pairKey = asset.krakenPair.replace('/', '').toUpperCase();
+  const pair = Object.keys(data.result).find((key) => key.replace('/', '').toUpperCase() === pairKey);
   return pair ? data.result[pair] : null;
 }
 
@@ -40,12 +41,12 @@ function percentageChange(price, reference) {
   return previous === null ? null : ((price - previous) / previous) * 100;
 }
 
-export async function fetchAnthropicXStock(fetchImpl = fetch) {
+export async function fetchKrakenAsset(asset, fetchImpl = fetch) {
   const now = Date.now();
   const currentHour = Math.floor(now / (HOUR_SECONDS * 1000)) * HOUR_SECONDS;
   const [tickerResponse, historyResponse] = await Promise.allSettled([
-    fetchKrakenPair('Ticker', {}, fetchImpl),
-    fetchKrakenPair('OHLC', {
+    fetchKrakenPair('Ticker', asset, {}, fetchImpl),
+    fetchKrakenPair('OHLC', asset, {
       interval: '60',
       since: String(currentHour - (WEEK_HOURS + 1) * HOUR_SECONDS)
     }, fetchImpl)
@@ -57,7 +58,7 @@ export async function fetchAnthropicXStock(fetchImpl = fetch) {
   const ticker = tickerResponse.value;
   const price = positivePrice(Array.isArray(ticker?.c) ? ticker.c[0] : undefined);
   if (price === null) {
-    throw new Error('Kraken response is missing ANTx price');
+    throw new Error(`Kraken response is missing ${asset.symbol} price`);
   }
 
   const candles = historyResponse.status === 'fulfilled' && Array.isArray(historyResponse.value)
@@ -68,9 +69,9 @@ export async function fetchAnthropicXStock(fetchImpl = fetch) {
   const previousWeek = candlesByHour.get(currentHour - WEEK_HOURS * HOUR_SECONDS);
 
   return {
-    id: 'antx',
-    name: 'Anthropic xStock',
-    symbol: 'ANTx',
+    id: asset.id,
+    name: asset.name,
+    symbol: asset.symbol,
     price,
     change1h: percentageChange(price, previousHour?.[4]),
     change24h: percentageChange(price, previousDay?.[1]),

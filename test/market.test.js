@@ -10,7 +10,8 @@ import {
   marketReportKey
 } from '../src/market.js';
 
-test('fetchMarketSnapshot maps public Bybit and Kraken prices without credentials', async () => {
+test('fetchMarketSnapshot maps public Bybit and Kraken prices without credentials', async (t) => {
+  t.mock.method(console, 'warn', () => {});
   const requests = [];
   const prices = {
     GRAMUSDT: 3.5,
@@ -98,7 +99,21 @@ test('fetchMarketSnapshot maps public Bybit and Kraken prices without credential
   );
   assert.deepEqual(partial.unavailableAssets, ['ANTx']);
   assert.deepEqual(partial.assets.map((asset) => asset.id), ['the-open-network', 'bitcoin', 'spcxx', 'nvdax', 'googlx', 'xaut']);
-  assert.match(formatMarketReport(partial, null), /Нет котировок: ANTx/);
+  const partialReport = formatMarketReport(partial, null);
+  assert.match(partialReport, /^📊 Рынок · неполные данные/);
+  assert.match(partialReport, /Нет котировок: ANTx/);
+
+  const withoutBybitCandles = await fetchMarketSnapshot((url, options) =>
+    new URL(url).pathname.endsWith('/kline')
+      ? new Response(null, { status: 503 })
+      : fetchImpl(url, options)
+  );
+  assert.equal(withoutBybitCandles.unavailableAssets, undefined);
+  const bitcoin = withoutBybitCandles.assets.find((asset) => asset.id === 'bitcoin');
+  assert.equal(bitcoin.price, 64000);
+  assert.equal(bitcoin.change24h, 1.2);
+  assert.equal(bitcoin.change1h, null);
+  assert.equal(bitcoin.change7d, null);
 });
 
 test('getMarketReportSlot follows Zagreb summer and winter time', () => {

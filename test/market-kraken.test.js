@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { fetchAnthropicXStock } from '../src/market-kraken.js';
+import { fetchKrakenAsset } from '../src/market-kraken.js';
 
+const ANTHROPIC = {
+  id: 'antx', name: 'Anthropic xStock', symbol: 'ANTx', krakenPair: 'ANTx/USD', tokenized: true
+};
 const NOW = '2026-11-25T20:37:00.000Z';
 const CURRENT_UTC_HOUR = Date.parse('2026-11-25T20:00:00.000Z') / 1000;
 const HOUR_SECONDS = 3600;
@@ -42,7 +45,7 @@ test('Anthropic uses Kraken spot xStock data and exact UTC-hour change reference
     candle(0, 88, 93)
   ] });
 
-  assert.deepEqual(await fetchAnthropicXStock(state.fetchImpl), {
+  assert.deepEqual(await fetchKrakenAsset(ANTHROPIC, state.fetchImpl), {
     id: 'antx',
     name: 'Anthropic xStock',
     symbol: 'ANTx',
@@ -62,7 +65,7 @@ test('missing Anthropic reference candles leave changes unknown', async (t) => {
     candle(2, 98, 99),
     candle(0, 90, 91)
   ] });
-  const asset = await fetchAnthropicXStock(state.fetchImpl);
+  const asset = await fetchKrakenAsset(ANTHROPIC, state.fetchImpl);
 
   assert.equal(asset.price, 90);
   assert.equal(asset.change1h, null);
@@ -74,7 +77,7 @@ test('the Anthropic spot quote remains available when its history is unavailable
   const fetchImpl = async (input) => new URL(input).pathname === '/0/public/Ticker'
     ? Response.json({ error: [], result: { 'ANTx/USD': { c: ['90', '1'] } } })
     : new Response(null, { status: 503 });
-  const asset = await fetchAnthropicXStock(fetchImpl);
+  const asset = await fetchKrakenAsset(ANTHROPIC, fetchImpl);
 
   assert.equal(asset.price, 90);
   assert.equal(asset.change24h, null);
@@ -86,7 +89,7 @@ test('missing xStock trade price fails instead of using an OHLC or equity quote'
     candles: [candle(0, 90, 91)]
   });
 
-  await assert.rejects(fetchAnthropicXStock(state.fetchImpl), /missing ANTx price/);
+  await assert.rejects(fetchKrakenAsset(ANTHROPIC, state.fetchImpl), /missing ANTx price/);
 });
 
 test('public Kraken API errors are reported as feed errors', async () => {
@@ -94,5 +97,5 @@ test('public Kraken API errors are reported as feed errors', async () => {
     ? Response.json({ error: ['EQuery:Unknown asset pair'] })
     : Response.json({ error: [], result: { 'ANTx/USD': [] } });
 
-  await assert.rejects(fetchAnthropicXStock(fetchImpl), /Kraken Ticker API error: EQuery:Unknown asset pair/);
+  await assert.rejects(fetchKrakenAsset(ANTHROPIC, fetchImpl), /Kraken Ticker API error: EQuery:Unknown asset pair/);
 });

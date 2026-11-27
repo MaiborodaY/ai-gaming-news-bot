@@ -99,6 +99,9 @@ function harness(t, referenceTime, options = {}) {
         : Response.json({ ok: true, result: { message_id: publications.length } });
     }
     if (url.startsWith('https://api.bybit.com/v5/market/')) {
+      if (options.failBybit) {
+        return new Response(null, { status: 403 });
+      }
       const parsed = new URL(url);
       if (parsed.pathname.endsWith('/tickers')) {
         return Response.json({ retCode: 0, result: { list: [{ lastPrice: '100', price24hPcnt: '0.01' }] } });
@@ -110,12 +113,24 @@ function harness(t, referenceTime, options = {}) {
     }
     if (url.startsWith('https://api.kraken.com/0/public/')) {
       const parsed = new URL(url);
+      const pair = parsed.searchParams.get('pair');
+      const prices = { 'TON/USD': 0.95, 'BTC/USD': 60000, 'SPCXx/USD': 130, 'ANTx/USD': 82.5,
+        'NVDAx/USD': 150, 'GOOGLx/USD': 270, 'XAUT/USD': 3500 };
+      const price = prices[pair];
+      assert.ok(price, `Unexpected Kraken pair: ${pair}`);
+      assert.equal(parsed.searchParams.get('assetVersion'), '1');
+      assert.equal(parsed.searchParams.get('asset_class'), pair.endsWith('x/USD') ? 'tokenized_asset' : null);
+      if (options.failKrakenFallback && pair !== 'ANTx/USD') {
+        return new Response(null, { status: 503 });
+      }
+      const open = pair === 'ANTx/USD' ? '80' : String(price * 0.99);
+      const close = pair === 'ANTx/USD' ? '82' : String(price);
       const market = parsed.pathname.endsWith('/Ticker')
-        ? { c: ['82.5', '1'] }
+        ? { c: [String(price), '1'] }
         : Array.from({ length: 169 }, (_, index) => [
-          Date.parse(referenceTime) / 1000 - index * 3600, '80', '90', '80', '82', '82', '1', 1
+          Date.parse(referenceTime) / 1000 - index * 3600, open, String(price), open, close, close, '1', 1
         ]);
-      return Response.json({ error: [], result: { 'ANTx/USD': market } });
+      return Response.json({ error: [], result: { [pair]: market } });
     }
     assert.fail(`Unexpected request: ${url}`);
   });
@@ -372,6 +387,43 @@ test('the evening market chart keeps the configured portfolio changes at the end
   const savedSnapshot = JSON.parse(state.kv.get('market:latest'));
   assert.ok(savedSnapshot.assets.some((asset) => asset.id === 'xaut'));
   assert.deepEqual(Object.keys(savedSnapshot).sort(), ['assets', 'generatedAt']);
+});
+
+test('a Bybit outage still produces a complete chart and portfolio from Kraken spot prices', async (t) => {
+  const time = '2026-11-27T20:00:00Z';
+  const state = harness(t, time, { failBybit: true, marketPortfolio: { spcxx: 1, nvdax: 2, antx: 3, googlx: 0.5, xaut: 0.01 } });
+  state.kv.set('market:latest', JSON.stringify({
+    assets: [{ id: 'antx', price: 80 }],
+    unavailableAssets: ['TON', 'BTC', 'SPCXx', 'NVDAx', 'GOOGLx', 'XAUT']
+  }));
+
+  await state.run(time, [LIVE_BROPRO_CRONS[0]]);
+
+  assert.equal(state.accepted().length, 1);
+  const [post] = state.accepted();
+  assert.equal(post.method, 'sendPhoto');
+  assert.ok(post.payload.caption.length <= 1000);
+  assert.match(post.payload.caption, /сейчас у вас было бы \$6,000,000\.00/);
+  assert.match(post.payload.caption, /С прошлого выпуска: нет данных\n1 ч: \+\$1\.50 • 24 ч: \+\$/);
+  assert.doesNotMatch(post.payload.caption, /Нет котировок|неполные данные/);
+  const chart = JSON.parse(new URL(post.payload.photo).searchParams.get('c'));
+  assert.deepEqual(chart.data.labels, ['TON', 'BTC', 'SPCXx', 'ANTx', 'NVDAx', 'GOOGLx', 'XAUT']);
+  assert.ok(chart.data.datasets[0].data.every(Number.isFinite));
+  assert.equal(JSON.parse(state.kv.get('market:latest')).assets.length, 7);
+  assert.equal(state.logs.filter(([message]) => message === 'Bybit quote unavailable, using Kraken').length, 6);
+});
+
+test('the scheduler does not post or replace previous market data when only Anthropic is available', async (t) => {
+  const time = '2026-11-27T20:00:00Z';
+  const state = harness(t, time, { failBybit: true, failKrakenFallback: true });
+  const previous = JSON.stringify({ assets: [{ id: 'bitcoin', price: 60000 }, { id: 'antx', price: 80 }] });
+  state.kv.set('market:latest', previous);
+
+  await assert.rejects(state.run(time, [LIVE_BROPRO_CRONS[0]]), /Not enough current market quotes/);
+
+  assert.equal(state.publications.length, 0);
+  assert.equal(state.kv.get('market:latest'), previous);
+  assert.equal(state.kv.has('market:report:2026-11-27:21'), false);
 });
 
 test('an unknown cron is an explicit failure and cannot silently report success', async (t) => {
